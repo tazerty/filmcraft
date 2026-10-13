@@ -1,0 +1,18 @@
+Evora Corte : moteur web
+
+Corte est basé sur FilmCraft par l'équipe ArtCraft.
+Corte is based on FilmCraft by the ArtCraft team.
+
+Source amont / upstream source : https://github.com/storytold/filmcraft
+Fork Evora : https://github.com/tazerty/filmcraft (branche evora/<tag amont>)
+
+Ce build est une version modifiée. Conformément à docs/brand/LICENSE-brand.txt de l'amont, il ne
+porte ni le nom, ni le logo-texte, ni le symbole ArtCraft, et ne se présente pas comme un produit
+ArtCraft. La présente mention, en texte simple, est celle que cette licence de marque autorise.
+
+This build is a modified version. As required by the upstream docs/brand/LICENSE-brand.txt, it does
+not carry the ArtCraft name, wordmark or mark and is not presented as an ArtCraft product. This
+plain-text statement is the one that trademark licence allows.
+
+Licences : voir LICENSE-MIT, LICENSE-APACHE, NOTICE, ATTRIBUTION.md, fonts/ et
+THIRD-PARTY-LICENSES.html dans ce dossier.

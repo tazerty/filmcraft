@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Licences des composants tiers / Third-party licenses</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; }
+  pre { white-space: pre-wrap; font-size: 12px; padding: 12px; border: 1px solid #8884; border-radius: 6px; }
+  ul.used { columns: 2; }
+</style>
+</head>
+<body>
+<h1>Licences des composants tiers / Third-party licenses</h1>
+<p>Composants Rust compilés dans le moteur web (crate <code>filmcraft-web</code>, cible <code>wasm32-unknown-unknown</code>), relevés par cargo-about.
+Rust components compiled into the web engine (crate <code>filmcraft-web</code>, target <code>wasm32-unknown-unknown</code>), collected by cargo-about.</p>
+<h2>Vue d'ensemble / Overview</h2>
+<ul>
+{{#each overview}}
+  <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+<h2>Textes / Texts</h2>
+{{#each licenses}}
+<section>
+  <h3 id="{{id}}">{{name}}</h3>
+  <ul class="used">
+  {{#each used_by}}
+    <li>{{crate.name}} {{crate.version}}</li>
+  {{/each}}
+  </ul>
+  <pre>{{text}}</pre>
+</section>
+{{/each}}
+</body>
+</html>
