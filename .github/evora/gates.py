@@ -51,6 +51,8 @@ INFO = [
     ("FilmCraft", b"FilmCraft", False),
     ("huggingface.co", b"huggingface.co", True),
     ("github.com", b"github.com", True),
+    ("localStorage", b"localStorage", False),
+    ("indexedDB", b"indexedDB", True),
 ]
 
 

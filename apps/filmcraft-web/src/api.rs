@@ -137,6 +137,13 @@ pub fn install() -> Result<(), JsValue> {
         .into_js_value(),
     )?;
     set_fn(&obj, "commands", Closure::<dyn Fn() -> js_sys::Promise>::new(|| request("engine.commands", json!({}))).into_js_value())?;
+    // Evora fork (patch E5): purge this storage namespace (resolves with whether anything was removed).
+    set_fn(
+        &obj,
+        "purgeStorage",
+        Closure::<dyn Fn() -> js_sys::Promise>::new(|| future_to_promise(async { crate::opfs::purge_namespace().await.map(JsValue::from_bool) }))
+            .into_js_value(),
+    )?;
     set_fn(&obj, "inspect", Closure::<dyn Fn() -> js_sys::Promise>::new(|| request("ui.inspect", json!({}))).into_js_value())?;
     set_fn(
         &obj,
