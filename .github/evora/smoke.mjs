@@ -421,6 +421,10 @@ try {
     return null;
   }
 
+  // Tout le contenu de l'OPFS de l'origine moteur : chemins, dossiers terminés par « / ».
+  const LIST_ALL =
+    "(async () => { const out = []; const walk = async (d, pre) => { for await (const [n, h] of d.entries()) { if (h.kind === 'directory') { out.push(pre + n + '/'); await walk(h, pre + n + '/'); } else out.push(pre + n); } }; await walk(await navigator.storage.getDirectory(), ''); return out.sort(); })()";
+
   // E3 : langue imposée par ?lang= (codes Evora ; zh-Hans → zh-cn ; pt en attente de D-23)
   if (langChecks) {
     report.lang = {};
@@ -465,41 +469,55 @@ try {
   // n'est écrit tant qu'evora:init n'a pas nommé l'espace (échec fermé, même projet modifié) ; la
   // purge n'a plus d'entrée JavaScript (filmcraft.purgeStorage retiré).
   if (storageChecks) {
-    const listRoot =
-      "(async () => { const r = await navigator.storage.getDirectory(); const out = []; for await (const [n, h] of r.entries()) out.push(n + (h.kind === 'directory' ? '/' : '')); return out.sort(); })()";
     const clearRoot =
       "(async () => { const r = await navigator.storage.getDirectory(); for await (const [n] of r.entries()) await r.removeEntry(n, { recursive: true }); return true; })()";
+    // un fichier en cours d'écriture refuse l'effacement (NoModificationAllowedError) : on réessaie
+    const clearRootRetry = async () => {
+      let r = null;
+      for (let i = 0; i < 20; i++) {
+        r = await inChild(clearRoot).catch((e) => String(e));
+        if (r === true) return true;
+        await sleep(500);
+      }
+      return r;
+    };
     const edit = (name) => inChild(`filmcraft.execute("file.newSequence", {name: ${JSON.stringify(name)}}).then(() => true, (e) => String(e))`).catch((e) => String(e));
     report.storageE5 = {};
     // 1. ?ns= ignoré : la récupération s'écrit à la racine, comme l'amont, sans dossier d'espace
-    report.storageE5.cleared = await inChild(clearRoot).catch((e) => String(e));
+    report.storageE5.cleared = await clearRootRetry();
     let l = await reload("empty&norecover&ns=evoraTestNsA1");
     const infoNs = await inChild("filmcraft.info()").catch(() => null);
     report.storageE5.ns = { ready: !!l?.readyMs, storage: infoNs?.storage, opfs: infoNs?.opfs, edit: await edit("E5-ns") };
     let rootNs = [];
     for (let i = 0; i < 40; i++) {
-      rootNs = await inChild(listRoot).catch(() => []);
-      if (Array.isArray(rootNs) && rootNs.includes("recovery/")) break;
+      rootNs = await inChild(LIST_ALL).catch(() => []);
+      if (Array.isArray(rootNs) && rootNs.includes("recovery/meta.json") && rootNs.includes("recovery/snapshot.fcproj")) break;
       await sleep(500);
     }
+    await sleep(1000); // l'écriture de l'instantané se termine
     report.storageE5.ns.root = rootNs;
+    if (report.storageE5.cleared !== true) fail(`E5 : la racine OPFS n'a pas pu être vidée avant la mesure (${JSON.stringify(report.storageE5.cleared)})`);
     if (!l?.readyMs || infoNs?.storage !== "root") fail(`E5 : sans ?host=evora le stockage doit rester celui de l'amont (${JSON.stringify(report.storageE5.ns)})`);
-    if (!(Array.isArray(rootNs) && rootNs.includes("recovery/"))) fail(`E5 : aucune écriture de récupération à la racine sans ?host=evora (${JSON.stringify(rootNs)})`);
+    if (!(Array.isArray(rootNs) && rootNs.includes("recovery/snapshot.fcproj"))) fail(`E5 : aucune écriture de récupération à la racine sans ?host=evora (${JSON.stringify(rootNs)})`);
     if (Array.isArray(rootNs) && rootNs.some((n) => n.startsWith("ns-") || n.startsWith("evora-corte"))) fail(`E5 : ?ns= a encore un effet (${JSON.stringify(rootNs)})`);
     report.storageE5.purgeApi = await inChild("typeof filmcraft.purgeStorage").catch((e) => String(e));
     if (report.storageE5.purgeApi !== "undefined") fail(`E5 : filmcraft.purgeStorage existe encore (${report.storageE5.purgeApi})`);
-    // 2. ?host=evora sans evora:init : OPFS fermé, aucune écriture même avec un projet modifié
-    report.storageE5.cleared2 = await inChild(clearRoot).catch((e) => String(e));
+    // 2. ?host=evora sans evora:init : OPFS fermé, rien au démarrage ni avec un projet modifié
+    report.storageE5.cleared2 = await clearRootRetry();
+    if (report.storageE5.cleared2 !== true) fail(`E5 : la racine OPFS n'a pas pu être vidée avant la mesure (${JSON.stringify(report.storageE5.cleared2)})`);
     l = await reload("empty&host=evora");
     const infoHost = await inChild("filmcraft.info()").catch(() => null);
-    report.storageE5.host = { ready: !!l?.readyMs, storage: infoHost?.storage, opfs: infoHost?.opfs, edit: await edit("E5-host") };
+    report.storageE5.host = { ready: !!l?.readyMs, storage: infoHost?.storage, opfs: infoHost?.opfs, atStart: await inChild(LIST_ALL).catch((e) => String(e)), edit: await edit("E5-host") };
     await sleep(7000); // plus que l'intervalle de l'instantané de récupération (5 s)
     const dirty = await inChild("filmcraft.execute('project.inspect').then((p) => p.dirty, (e) => String(e))").catch((e) => String(e));
     report.storageE5.host.dirty = dirty;
-    report.storageE5.host.root = await inChild(listRoot).catch((e) => String(e));
+    report.storageE5.host.root = await inChild(LIST_ALL).catch((e) => String(e));
     if (!l?.readyMs || infoHost?.storage !== "closed" || infoHost?.opfs !== false) fail(`E5 : avec ?host=evora, OPFS doit rester fermé avant evora:init (${JSON.stringify(report.storageE5.host)})`);
     if (dirty !== true) fail(`E5 : le projet n'est pas modifié, la mesure ne prouve rien (${JSON.stringify(dirty)})`);
-    if (!Array.isArray(report.storageE5.host.root) || report.storageE5.host.root.length !== 0) fail(`E5 : écritures OPFS avant evora:init : ${JSON.stringify(report.storageE5.host.root)}`);
+    for (const k of ["atStart", "root"]) {
+      const v = report.storageE5.host[k];
+      if (!Array.isArray(v) || v.length !== 0) fail(`E5 : écritures OPFS avant evora:init (${k}) : ${JSON.stringify(v)}`);
+    }
   }
 
   // E5 (mesure) : clés localStorage et bases IndexedDB réellement présentes pour l'origine moteur
