@@ -426,9 +426,12 @@ mod tests {
         set_current(Language::En);
     }
 
+    // Evora fork (E9, E10): these tests check the catalogs against the menus' English *source*
+    // labels, which `menus::default_menu_items` returns (built-in workspaces included);
+    // `menus::menu_items` returns what is displayed, and English display now goes through the
+    // override catalog (i18n/overrides.tsv).
     #[test]
     fn spanish_translates_every_menu_label() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut missing: Vec<String> = Vec::new();
         let mut need = |text: &str| {
             if translatable(text) && !Language::Es.has(text) && !missing.iter().any(|m| m == text) {
@@ -438,7 +441,7 @@ mod tests {
         for top in crate::menus::MENUS {
             need(top);
         }
-        for it in crate::menus::menu_items(&app) {
+        for it in crate::menus::default_menu_items() {
             need(&it.label);
             for p in &it.path {
                 need(p);
@@ -468,7 +471,6 @@ mod tests {
         for (ctx, en, _) in &entries {
             assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Portuguese entry without a Spanish one: {ctx:?} {en:?}");
         }
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut missing: Vec<String> = Vec::new();
         let mut need = |text: &str| {
             if translatable(text) && Language::Es.has(text) && !Language::PtBr.has(text) && !missing.iter().any(|m| m == text) {
@@ -478,7 +480,7 @@ mod tests {
         for top in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
             need(top);
         }
-        for it in crate::menus::menu_items(&app) {
+        for it in crate::menus::default_menu_items() {
             need(&it.label);
             for p in &it.path {
                 need(p);
@@ -525,7 +527,6 @@ mod tests {
     /// The Simplified Chinese catalog is complete: every menu label and every `tl!` literal.
     #[test]
     fn chinese_translates_every_menu_label_and_tl_literal() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut missing: Vec<String> = Vec::new();
         let mut need = |text: &str| {
             if translatable(text) && !Language::ZhCn.has(text) && !missing.iter().any(|m| m == text) {
@@ -535,7 +536,7 @@ mod tests {
         for top in crate::menus::MENUS {
             need(top);
         }
-        for it in crate::menus::menu_items(&app) {
+        for it in crate::menus::default_menu_items() {
             need(&it.label);
             for p in &it.path {
                 need(p);
@@ -554,7 +555,6 @@ mod tests {
     /// interface translates through `i18n::t`.
     #[test]
     fn japanese_translates_every_menu_label_tl_literal_and_name() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut missing: Vec<String> = Vec::new();
         let mut need = |text: &str| {
             if translatable(text) && !Language::Ja.has(text) && !missing.iter().any(|m| m == text) {
@@ -564,7 +564,7 @@ mod tests {
         for top in crate::menus::MENUS {
             need(top);
         }
-        for it in crate::menus::menu_items(&app) {
+        for it in crate::menus::default_menu_items() {
             need(&it.label);
             for p in &it.path {
                 need(p);
@@ -1037,8 +1037,7 @@ mod tests {
 
     #[test]
     fn ukrainian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
+        let items = crate::menus::default_menu_items();
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
         let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
         for (_, en, _) in entries {
@@ -1053,8 +1052,7 @@ mod tests {
     /// macOS app menu); every entry must still be a menu label.
     #[test]
     fn german_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
+        let items = crate::menus::default_menu_items();
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
         let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
         for (_, en, _) in entries {
@@ -1102,8 +1100,7 @@ mod tests {
 
     #[test]
     fn russian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
+        let items = crate::menus::default_menu_items();
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
         let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
         for (_, en, _) in entries {
