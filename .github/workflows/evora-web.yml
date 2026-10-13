@@ -10,8 +10,12 @@
 # (LICENSES/ agrégé), test de fumée Chrome sans interface depuis une autre origine. Portes de
 # catalogue : émojis (E10) et termes sensibles (E9), en mesure tant que leur patch n'est pas posé
 # (EVORA_EMOJI_GATE / EVORA_TERMS_GATE), bloquantes ensuite.
-# Sorties : evora-corte-web-<tag>.zip (site, .br/.gz, LICENSES/, csp-hashes.txt), SHA256SUMS,
-# csp-hashes.txt. L'artefact au nom Evora n'est publié que si toutes les portes sont vertes.
+# Le test de fumée couvre aussi E4 (pont EHP v1, scénario « pont-ehp » : coquille minimale sur une
+# autre origine, origine admise par evora-host.json, relais « jumeau » et « intrus », puis le même banc
+# contre un témoin sabordé qui doit être déclaré rouge) et le correctif E5 (espace de noms par
+# evora:init seulement, purges). Porte evora-host.json : livré vide (pont muet), sans .br ni .gz.
+# Sorties : evora-corte-web-<tag>.zip (site, .br/.gz, LICENSES/, csp-hashes.txt, evora-host.json vide),
+# SHA256SUMS, csp-hashes.txt. L'artefact au nom Evora n'est publié que si toutes les portes sont vertes.
 name: Evora web
 
 on:
@@ -256,6 +260,10 @@ jobs:
           cp -R "$site/." "$stage/"
           python3 -I .github/evora/gates.py csp "$stage/index.html" "$stage/csp-hashes.txt"
           node .github/evora/precompress.mjs "$stage"
+          # E4 : origines parentes admises par le pont EHP (?host=evora). Vide dans l'artefact : le
+          # provisionnement d'Evora l'écrit depuis engines.json (HOST-PROTOCOL §2.3) ; vide, le pont
+          # reste muet. Écrit après la précompression : aucune copie .br/.gz ne doit lui survivre.
+          printf '{"parentOrigins": []}\n' > "$stage/evora-host.json"
           for f in LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do cp "$f" "$stage/LICENSES/"; done
           cp .github/evora/BASED-ON.txt "$stage/LICENSES/"
           cp assets/fonts/OFL-*.txt "$stage/LICENSES/fonts/"
@@ -278,6 +286,11 @@ jobs:
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         shell: bash
         run: python3 -I .github/evora/gates.py hosting "dist/evora/${{ steps.meta.outputs.name }}.zip"
+
+      - name: Porte evora-host.json (pont EHP muet dans l'artefact)
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        shell: bash
+        run: python3 -I .github/evora/gates.py hostcfg "dist/evora/${{ steps.meta.outputs.name }}.zip"
 
       - name: Porte catalogues (émojis E10, termes sensibles E9)
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
@@ -302,7 +315,7 @@ jobs:
           node --version
           google-chrome --version
           node .github/evora/smoke.mjs --site "$x/$NAME" --csp "$x/$NAME/csp-hashes.txt" --out "$RUNNER_TEMP/fumee" \
-            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --storage-checks --theme-checks
+            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --storage-checks --theme-checks --ehp-checks
 
       - name: Diagnostic du test de fumée
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}

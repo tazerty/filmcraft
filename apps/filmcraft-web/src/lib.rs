@@ -14,6 +14,9 @@
 //! | frame worker threads | cooperative frame queue pumped between UI frames (`FrameServer::pump`) |
 //! | TCP control channel / MCP | `window.filmcraft` JavaScript API ([`api`]) |
 //!
+//! Evora fork (patch E4): with `?host=evora` inside an `<iframe>`, Evora's shell, on another origin
+//! that `evora-host.json` admits, speaks the Evora host protocol with the engine ([`ehp`]).
+//!
 //! Everything here is `wasm32`-only; on other targets the crate is empty.
 #![cfg(target_arch = "wasm32")]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -21,6 +24,7 @@
 pub mod api;
 pub mod audio;
 pub mod download_pacing;
+pub mod ehp;
 pub mod fs;
 pub mod import;
 pub mod opfs;
@@ -100,6 +104,7 @@ impl eframe::App for WebApp {
             f(self, ctx);
         }
         self.app.logic(ctx, frame);
+        ehp::tick(&self.app.session);
         api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
@@ -174,6 +179,18 @@ fn impose_language(app: &mut FilmcraftApp) {
     set_info("language", json!({"requested": tag, "applied": code}));
 }
 
+/// Evora fork (patch E4): the `evora:failed` code of a failed start, or `None` when `index.html`
+/// reloads the page on WebGL2 (it does when WebGPU was found but could not be started, without
+/// `?webgl` or `?cpu`: same test as there).
+fn failure_code(e: &JsValue) -> Option<&'static str> {
+    let text = e.as_string().unwrap_or_else(|| format!("{e:?}")).to_ascii_lowercase();
+    let webgpu = ["wgpu", "webgpu", "requestdevice", "requestadapter", "gpudevice", "surface"].iter().any(|w| text.contains(w));
+    if webgpu && !query_flag("webgl") && !query_flag("cpu") {
+        return None;
+    }
+    Some(if text.contains("webgl") { "no_webgl2" } else { "init" })
+}
+
 /// Entry point (called by the page's bootstrap script once the wasm module is instantiated).
 #[wasm_bindgen]
 pub async fn start(canvas_id: String) -> Result<(), JsValue> {
@@ -206,7 +223,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    // Evora fork (patch E4): inside Evora's shell, the engine opens what the shell sends.
+    let demo = !query_flag("empty") && !hosted;
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.
@@ -216,7 +234,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
     }
     let runner = eframe::WebRunner::new();
-    runner
+    let started = runner
         .start(
             canvas,
             web_options,
@@ -224,11 +242,18 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());
-                fs::set_on_write(|path, data| {
-                    if let Err(e) = fs::download(path, data) {
-                        log::warn!("download {path}: {e:?}");
-                    }
-                });
+                if hosted {
+                    // Evora fork (patch E4): the project Evora opened goes to the shell, nothing
+                    // else is written out (never a download).
+                    fs::set_on_write(ehp::on_write);
+                } else {
+                    fs::set_on_write(|path, data| {
+                        if let Err(e) = fs::download(path, data) {
+                            log::warn!("download {path}: {e:?}");
+                        }
+                        Ok(())
+                    });
+                }
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 let mut toast = None;
@@ -278,10 +303,20 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
+                if hosted {
+                    ehp::connect();
+                }
                 Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
             }),
         )
-        .await?;
+        .await;
+    if let Err(e) = started {
+        // Evora fork (patch E4): tell Evora's shell, unless the page retries on WebGL2.
+        if hosted && let Some(code) = failure_code(&e) {
+            ehp::report_failure(code);
+        }
+        return Err(e);
+    }
     set_info("startupMs", json!(t0.elapsed().as_secs_f64() * 1000.0));
     // keep the runner alive for the page's lifetime
     std::mem::forget(runner);
