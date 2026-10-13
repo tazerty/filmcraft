@@ -143,6 +143,21 @@ impl Language {
             .unwrap_or_default()
     }
 
+    /// Evora fork (patch E3): the interface language Evora's shell imposes (`?lang=` today,
+    /// `evora:init` later). Takes Evora's codes (ar, de, en, es, fr, hi, id, it, ja, ko, pt, ru, tr,
+    /// zh-Hans) or this engine's own codes, any case. `zh-Hans` (also `zh-hans`, `zh-CN`, `zh`)
+    /// gives the Simplified Chinese catalog. `pt` gives nothing until Evora chooses between the
+    /// Brazilian and European variants (decision D-23); the explicit engine code `pt-br` is
+    /// honoured. Languages without a catalog here (ar, hi, it, ko, tr…) give `None`: the canvas
+    /// stays in English and the shell shows its translated banner.
+    pub fn from_evora(tag: &str) -> Option<Self> {
+        let tag = tag.trim().to_ascii_lowercase();
+        match tag.as_str() {
+            "zh-hans" | "zh-cn" | "zh" => Some(Self::ZhCn),
+            t => Self::parse(t),
+        }
+    }
+
     /// Stable code: the `general.interfaceLanguage` preference value (`Language::parse` reads it back).
     pub fn code(self) -> &'static str {
         match self {
@@ -884,6 +899,24 @@ mod tests {
         let mut missing: Vec<String> = dynamic_names().into_iter().filter(|n| !Language::Es.has(n)).collect();
         missing.sort();
         assert!(missing.is_empty(), "untranslated names: {missing:#?}");
+    }
+
+    /// Evora fork (E3): Evora's language codes, zh-Hans included; pt waits for D-23.
+    #[test]
+    fn evora_language_codes_map_to_catalogs() {
+        assert_eq!(Language::from_evora("fr"), Some(Language::Fr));
+        assert_eq!(Language::from_evora("zh-Hans"), Some(Language::ZhCn));
+        assert_eq!(Language::from_evora("zh-hans"), Some(Language::ZhCn));
+        assert_eq!(Language::from_evora("zh-CN"), Some(Language::ZhCn));
+        assert_eq!(Language::from_evora(" EN "), Some(Language::En));
+        assert_eq!(Language::from_evora("pt-br"), Some(Language::PtBr));
+        assert_eq!(Language::from_evora("pt"), None, "no Portuguese variant chosen (D-23)");
+        for none in ["ar", "hi", "it", "ko", "tr", "zh-Hant", "", "xx"] {
+            assert_eq!(Language::from_evora(none), None, "{none}");
+        }
+        for l in Language::ALL {
+            assert_eq!(Language::from_evora(l.code()), Some(l));
+        }
     }
 
     #[test]
