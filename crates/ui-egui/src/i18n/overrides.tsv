@@ -1,0 +1,45 @@
+# Evora fork: display override catalog ("catalogue de surcharge d'affichage", patches E10 and E9).
+# Columns, separated by a TAB:  language code <TAB> English source <TAB> text to display
+#
+#   language  en, es, fr, id, ja, pt-br, zh-cn, de, ru, uk (Language::code)
+#   source    the English text the code asks for (tl!/tlf! literal, menu label, or a name the UI
+#             translates with i18n::t), exactly as in the code and the upstream catalogs
+#   display   what this build shows instead, in that language
+#
+# Lookup in Language::tr: this file for the language, then the upstream catalog of the language,
+# then this file for English (the corrected source text), then the source itself. The upstream
+# catalogs (*.tsv) stay untouched, so they rebase cleanly; only what is displayed changes.
+# Escapes and placeholders follow es.tsv: \n \t \\ ; `{name}` placeholders must appear in both
+# columns; a trailing "…" is kept.
+# Lines starting with # and blank lines are ignored.
+
+# --- E10: no emoji or pictograph in the interface (Evora rule "zéro émoji d'interface") ----------
+# Check marks and crosses (U+2713, U+2714, U+2716) in catalog strings become words.
+en	✓ Enable	Enable (on)
+es	✓ Enable	Activar (activado)
+fr	✓ Enable	Activer (activé)
+id	✓ Enable	Aktifkan (nyala)
+ja	✓ Enable	有効（オン）
+pt-br	✓ Enable	Ativar (ativado)
+zh-cn	✓ Enable	启用（开）
+en	✔ same file	Same file
+es	✔ same file	Mismo archivo
+fr	✔ same file	Même fichier
+id	✔ same file	Berkas sama
+ja	✔ same file	同じファイル
+pt-br	✔ same file	Mesmo arquivo
+zh-cn	✔ same file	同一文件
+en	✔ matches	Matches
+es	✔ matches	Coincide
+fr	✔ matches	Correspond
+id	✔ matches	Cocok
+ja	✔ matches	一致
+pt-br	✔ matches	Corresponde
+zh-cn	✔ matches	匹配
+en	✖ different file	Different file
+es	✖ different file	Archivo distinto
+fr	✖ different file	Fichier différent
+id	✖ different file	Berkas berbeda
+ja	✖ different file	別のファイル
+pt-br	✖ different file	Arquivo diferente
+zh-cn	✖ different file	不同文件

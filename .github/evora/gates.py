@@ -161,7 +161,8 @@ def parse_tsv(path):
         cols = ln.rstrip("\n").rstrip("\r").split("\t")
         if len(cols) != 3:
             continue
-        dec = [re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), c) for c in cols]
+        # comme catalog.rs : \\n, \\t et \\\\ seulement ; tout autre échappement garde sa barre
+        dec = [re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "\\": "\\"}.get(m.group(1), "\\" + m.group(1)), c) for c in cols]
         rows.append((n, dec[0], dec[1], dec[2]))
     return rows
 
@@ -179,7 +180,7 @@ def display_keys(root):
 
 def displayed(root):
     """Chaînes réellement affichées, langue par langue, selon la résolution de Language::tr :
-    surcharge de la langue, sinon surcharge anglaise, sinon catalogue, sinon source anglaise.
+    surcharge de la langue, sinon catalogue de la langue, sinon surcharge anglaise, sinon source.
     Rend [(langue, clé, texte affiché, origine)] et le nombre de chaînes brutes lues."""
     i18n = os.path.join(root, "crates", "ui-egui", "src", "i18n")
     catalogs, contextual = {}, []
@@ -202,9 +203,11 @@ def displayed(root):
     out = []
     for lang in ["en"] + sorted(catalogs):
         for k in sorted(keys):
-            hit = overrides.get(lang, {}).get(k) or overrides.get("en", {}).get(k)
+            hit = overrides.get(lang, {}).get(k)
             if hit is None and lang != "en":
                 hit = catalogs[lang].get(k)
+            if hit is None:
+                hit = overrides.get("en", {}).get(k)
             if hit is None:
                 hit = (k, code.get(k, "source"))
             out.append((lang, k, hit[0], hit[1]))
@@ -247,7 +250,7 @@ def cmd_catalogs(root, emoji_mode, terms_mode):
 
     langs = sorted({h[0] for h in shown})
     out = ["### Porte « catalogues » : émojis (E10) et termes sensibles (E9)", ""]
-    out.append(f"{raw} chaînes de catalogue lues ; résolution d'affichage modélisée sur {len(langs)} langues ({', '.join(langs)}) : surcharge de la langue, sinon surcharge anglaise, sinon catalogue, sinon source anglaise. Catalogue de surcharge présent : {'oui' if has_overrides else 'non'}.")
+    out.append(f"{raw} chaînes de catalogue lues ; résolution d'affichage modélisée sur {len(langs)} langues ({', '.join(langs)}) : surcharge de la langue, sinon catalogue de la langue, sinon surcharge anglaise, sinon source. Catalogue de surcharge présent : {'oui' if has_overrides else 'non'}.")
     out.append("")
     out.append(f"Émojis et pictogrammes **affichés** (toutes langues, chaînes de catalogue) : **{len(emoji_hits)}** — mode `{emoji_mode}`.")
     for c, where in sorted(by_char(emoji_hits).items(), key=lambda x: ord(x[0])):
