@@ -141,6 +141,27 @@ fn query_value(name: &str) -> Option<String> {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).and_then(|p| p.get(name))
 }
 
+/// Evora's accent colour (indigo).
+const EVORA_ACCENT: &str = "#4f46e5";
+
+/// Evora fork (patch E2): Evora's look without touching the theme module. The indigo accent becomes
+/// the highlight colour (it also recolours focus, playhead, timecode and track targeting), and the
+/// shell's light or dark appearance applies with `?theme=light|dark|auto` (dark without it, as
+/// upstream). The interface font is already Inter.
+fn apply_evora_theme(app: &mut FilmcraftApp) {
+    let mut set = |key: &str, value: &str| {
+        if let Err(e) = app.session.execute("prefs.set", json!({"key": key, "value": value})) {
+            log::warn!("{key}: {e}");
+        }
+    };
+    set("appearance.highlightColor", EVORA_ACCENT);
+    let mode = query_value("theme").filter(|t| matches!(t.as_str(), "light" | "dark" | "auto"));
+    if let Some(m) = &mode {
+        set("appearance.appearanceMode", m.as_str());
+    }
+    set_info("theme", json!({"accent": EVORA_ACCENT, "mode": mode}));
+}
+
 /// Evora fork (patch E3): the interface language Evora's shell imposes with `?lang=`, whatever
 /// the saved preference. Unknown or undecided languages (`pt`, D-23) keep the canvas in English;
 /// Japanese and Chinese still need a font (otherwise the engine stays in English and says so).
@@ -227,6 +248,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
                 impose_language(&mut app);
+                apply_evora_theme(&mut app);
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
