@@ -1,0 +1,222 @@
+# Evora : build web (WASM) de filmcraft, futur moteur d'Evora Corte.
+#
+# Workflow écrit par Evora. Rien n'est copié de storytold/craft-common-actions (non épinglé, sans
+# licence). La logique reprend packaging/web/package.sh et la commande `cargo xtask web`
+# (xtask/src/main.rs), sous MIT OR Apache-2.0, avec deux écarts voulus :
+#   - les exemples d'hébergement (_headers, .htaccess, HOSTING.md) ne sont PAS mis dans l'archive ;
+#   - les licences et mentions (LICENSE-MIT, LICENSE-APACHE, NOTICE, ATTRIBUTION.md) vont dans LICENSES/.
+# Build sans craft-fonts, comme le job web officiel de la release 0.7.2 (l'épinglage des polices
+# relève du patch E6). Archive au nom amont tant que le patch E1 (retrait des marques ArtCraft)
+# n'est pas posé. Aucune action tierce, aucun secret.
+name: Evora web
+
+on:
+  push:
+    branches: ["evora/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evora-web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pas de rust-toolchain(.toml) dans le dépôt : stable épinglée, au moins rust-version (1.95) du
+  # Cargo.toml ; 1.99.0 est la version qui a produit la release web officielle 0.7.2.
+  RUST_TOOLCHAIN: "1.99.0"
+  # Doit être exactement WASM_BINDGEN de xtask/src/main.rs (vérifié plus bas).
+  WASM_BINDGEN_VERSION: "0.2.129"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  web:
+    name: Web (wasm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag amont et nom de l'archive
+        id: meta
+        shell: bash
+        run: |
+          branch="$GITHUB_REF_NAME"
+          tag="${branch#evora/}"
+          if [[ "$branch" != evora/* || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::branche inattendue « $branch » (attendu : evora/vX.Y.Z)"
+            exit 1
+          fi
+          version="$(awk '/^\[/ { p = ($0 == "[workspace.package]"); next } p && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)"
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::Cargo.toml annonce $version, la branche vise $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=evora-filmcraft-web-$tag" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Concordance de wasm-bindgen avec xtask
+        shell: bash
+        run: |
+          want="$(sed -n 's/^const WASM_BINDGEN: &str = "\(.*\)";$/\1/p' xtask/src/main.rs)"
+          if [ "$want" != "$WASM_BINDGEN_VERSION" ]; then
+            echo "::error::xtask exige wasm-bindgen « $want », le workflow épingle $WASM_BINDGEN_VERSION"
+            exit 1
+          fi
+
+      - name: Toolchain Rust (rustup)
+        shell: bash
+        run: |
+          rustup --version
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version --verbose
+          cargo --version
+          need="$(awk -F'"' '/^rust-version *=/ { print $2; exit }' Cargo.toml)"
+          have="$(rustc --version | awk '{ print $2 }')"
+          if [ -z "$need" ] || ! printf '%s\n%s\n' "$need" "$have" | sort -V -C; then
+            echo "::error::rustc $have ne satisfait pas rust-version « $need »"
+            exit 1
+          fi
+
+      - name: Cache du registre cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: evora-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            evora-cargo-${{ runner.os }}-
+
+      - name: Cache des outils épinglés
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.evora-tools
+          key: evora-tools-${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN }}-wasm-bindgen-${{ env.WASM_BINDGEN_VERSION }}
+
+      - name: wasm-bindgen-cli (version épinglée)
+        shell: bash
+        run: |
+          tools="$HOME/.evora-tools"
+          if [ ! -x "$tools/bin/wasm-bindgen" ]; then
+            cargo install wasm-bindgen-cli --version "=$WASM_BINDGEN_VERSION" --locked --root "$tools"
+          fi
+          got="$("$tools/bin/wasm-bindgen" --version)"
+          echo "$got"
+          if [ "$got" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
+            echo "::error::wasm-bindgen inattendu : « $got »"
+            exit 1
+          fi
+          echo "$tools/bin" >> "$GITHUB_PATH"
+
+      - name: Build web (cargo xtask web)
+        shell: bash
+        run: |
+          # xtask applique wasm-opt s'il le trouve sur le PATH : le signaler, il n'est pas épinglé ici.
+          if command -v wasm-opt >/dev/null; then
+            echo "::warning::wasm-opt présent sur le runner ($(wasm-opt --version)), appliqué par xtask"
+          fi
+          unset CRAFT_FONTS_DIR CRAFT_FONTS_REQUIRED
+          command -v wasm-bindgen
+          cargo xtask web
+
+      - name: Empaquetage du site statique
+        shell: bash
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          site="target/web/dist"
+          [ -f "$site/index.html" ] || { echo "::error::$site/index.html absent"; exit 1; }
+          # Les URL doivent rester relatives pour que le site marche sous n'importe quel préfixe.
+          if grep -Eq '(src|href)="/[^/]' "$site/index.html"; then
+            echo "::error::$site/index.html contient des URL absolues"
+            exit 1
+          fi
+          out="$GITHUB_WORKSPACE/dist/evora"
+          work="$out/work"
+          mkdir -p "$work/$NAME/LICENSES"
+          cp -R "$site/." "$work/$NAME/"
+          for f in LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do
+            if [ -f "$f" ]; then cp "$f" "$work/$NAME/LICENSES/"; fi
+          done
+          # Archive reproductible : ordre trié, dates fixées au commit, sans attributs étendus.
+          find "$work/$NAME" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+          (cd "$work" && find "$NAME" -type f | LC_ALL=C sort | zip -qX9 "$out/$NAME.zip" -@)
+          (cd "$out" && sha256sum "$NAME.zip" > SHA256SUMS && cat SHA256SUMS)
+          unzip -l "$out/$NAME.zip"
+
+      - name: Artefact
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.meta.outputs.name }}
+          path: |
+            dist/evora/${{ steps.meta.outputs.name }}.zip
+            dist/evora/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Garde-fous (non bloquants, résumé du job)
+        continue-on-error: true
+        shell: bash
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set +e
+          site="target/web/dist"
+          zip="dist/evora/$NAME.zip"
+          wasm="$site/filmcraft_web_bg.wasm"
+          count() { grep -a -o "$@" | wc -l; }
+          {
+            echo "## $NAME"
+            echo
+            echo "- Commit : \`$GITHUB_SHA\` (branche \`$GITHUB_REF_NAME\`)"
+            echo "- Outils : \`$(rustc --version)\`, \`$(wasm-bindgen --version)\`, wasm-opt : \`$(command -v wasm-opt >/dev/null && wasm-opt --version || echo absent)\`"
+            echo "- SHA256SUMS : \`$(cat dist/evora/SHA256SUMS)\`"
+            echo "- Empreinte de l'artefact (upload-artifact) : \`${ARTIFACT_DIGEST:-inconnue}\`"
+            echo
+            echo "### Fichiers d'hébergement dans l'archive (attendu : aucun)"
+            hosting="$(unzip -Z1 "$zip" | grep -E '(^|/)(_headers|\.htaccess|[^/]*\.conf|[^/]*\.php|\.[^/]*)$')"
+            if [ -n "$hosting" ]; then
+              echo "AVERTISSEMENT :"
+              echo '```'
+              echo "$hosting"
+              echo '```'
+            else
+              echo "Aucun."
+            fi
+            echo
+            echo "### Tailles (octets)"
+            echo
+            echo "| Élément | Taille |"
+            echo "|---|---|"
+            echo "| \`filmcraft_web_bg.wasm\` | $(stat -c %s "$wasm") |"
+            echo "| \`filmcraft_web_bg.wasm\` (gzip -9) | $(gzip -9 -c "$wasm" | wc -c) |"
+            echo "| \`$NAME.zip\` | $(stat -c %s "$zip") |"
+            echo
+            echo "### Marques dans le bundle (mesure de la cible E1)"
+            echo
+            echo "| Fichier | ArtCraft | artcraft (casse ignorée) | getartcraft | discord.gg | FilmCraft |"
+            echo "|---|---|---|---|---|---|"
+            total=0
+            for f in $(cd "$site" && LC_ALL=C ls); do
+              p="$site/$f"
+              a="$(count -F 'ArtCraft' "$p")"
+              total=$((total + a))
+              echo "| \`$f\` | $a | $(count -i -F 'artcraft' "$p") | $(count -i -F 'getartcraft' "$p") | $(count -F 'discord.gg' "$p") | $(count -F 'FilmCraft' "$p") |"
+            done
+            echo
+            echo "Total « ArtCraft » dans le bundle : $total (LICENSES/ exclu : la mention y est permise)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$hosting" ]; then echo "::warning::fichiers d'hébergement dans l'archive : $hosting"; fi
+          echo "::notice::wasm $(stat -c %s "$wasm") octets ; « ArtCraft » dans le bundle : $total"
+          cat "$GITHUB_STEP_SUMMARY"
