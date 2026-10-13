@@ -134,6 +134,39 @@ def is_emoji(c):
 
 
 TERMS = ["Lumetri", "Lightroom", "Acrobat", "Premiere", "Adobe", "Cycore"]
+# Un terme est un mot : ni précédé ni suivi d'une lettre (« Volumetric » ne contient pas « Lumetri »).
+TERM_RE = {t: re.compile(r"(?<![^\W\d_])" + t + r"(?![^\W\d_])", re.I) for t in TERMS}
+LABEL_RE = re.compile(r"^[A-Z][A-Za-z0-9 &'-]*$")
+IDENT_RE = re.compile(r"[a-z][A-Za-z0-9_.:/-]*")
+
+
+def terms_in(text):
+    return [t for t in TERMS if TERM_RE[t].search(text)]
+
+
+def engine_literals(root):
+    """Littéraux des crates moteur (engine, project, render ; hors tests et commentaires) qui
+    contiennent un terme sensible. Un libellé (titre court, sans ponctuation) est affiché par
+    l'interface via i18n::t (commandes, historique, préréglages) ; le reste (messages d'erreur,
+    schémas de paramètres, espaces de noms XMP) n'est pas surchargeable sans exception L0–L5."""
+    for crate in ("engine", "project", "render"):
+        src = os.path.join(root, "crates", crate, "src")
+        for p in files_under(src):
+            if not p.endswith(".rs") or p.endswith("_tests.rs") or os.path.basename(p) == "tests.rs":
+                continue
+            text = open(p, encoding="utf-8").read().replace("\r\n", "\n")
+            cut = text.find("#[cfg(test)]\nmod tests")
+            text = text if cut < 0 else text[:cut]
+            for n, ln in enumerate(text.split("\n"), 1):
+                if ln.strip().startswith("//"):
+                    continue
+                for m in LIT.finditer(ln):
+                    lit = unescape(m.group(1))
+                    if IDENT_RE.fullmatch(lit):
+                        continue  # identifiant (effet, commande, clé) : jamais affiché
+                    if terms_in(lit):
+                        label = bool(LABEL_RE.match(lit)) and len(lit.split()) <= 8
+                        yield os.path.relpath(p, root), n, lit, label
 LIT = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 DISPLAY_CALL = re.compile(r'\b(?:tl|tlf)!\(\s*"((?:[^"\\\n]|\\.)*)"|\buic!\(\s*"[^"]*",\s*"((?:[^"\\\n]|\\.)*)"')
 
@@ -234,9 +267,24 @@ def cmd_catalogs(root, emoji_mode, terms_mode):
         for c in text:
             if is_emoji(c):
                 emoji_hits.append((f"{lang} {origin}", c))
-        for t in TERMS:
-            if t.lower() in text.lower():
-                term_hits.append((lang, t, text))
+        for t in terms_in(text):
+            term_hits.append((lang, t, text))
+    # libellés du moteur affichés via i18n::t : surcharge anglaise ou libellé brut
+    en_over = {}
+    ov_path = os.path.join(root, "crates", "ui-egui", "src", "i18n", "overrides.tsv")
+    if os.path.exists(ov_path):
+        en_over = {src: disp for _, lang, src, disp in parse_tsv(ov_path) if lang == "en"}
+    known = {key for _, key, _, _ in shown}
+    residue, neutralised = [], 0
+    for origin, line, lit, label in engine_literals(root):
+        if lit in known or lit in en_over:
+            # affiché via i18n::t et déjà couvert par la résolution ci-dessus
+            neutralised += 1
+        elif label:
+            for t in terms_in(lit):
+                term_hits.append(("moteur", t, f"{lit} ({origin}:{line})"))
+        else:
+            residue.append(f"{origin}:{line} « {lit[:90]} »")
     for origin, line, s in other_literals(root):
         for c in s:
             if is_emoji(c):
@@ -266,6 +314,13 @@ def cmd_catalogs(root, emoji_mode, terms_mode):
     out.append("|---|---|")
     for t in TERMS:
         out.append(f"| {t} | {sum(1 for h in term_hits if h[1] == t)} |")
+    for lang, t, text in term_hits[:20]:
+        out.append(f"- {lang} [{t}] : {text[:120]}")
+    out.append("")
+    out.append(f"Chaînes du moteur affichées via i18n::t et neutralisées par la résolution : {neutralised}.")
+    out.append(f"Résidu moteur (messages hors i18n::t, non surchargeables sans exception L0–L5 ; mesure non bloquante) : **{len(residue)}**.")
+    for r in residue:
+        out.append(f"- {r}")
     text = "\n".join(out)
     print(text)
     summary(text)

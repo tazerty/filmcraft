@@ -370,7 +370,7 @@ try {
     rendered.languages[cmd] = { labels: labels.length };
     for (const l of labels) {
       for (const ch of l) if (isEmoji(ch)) rendered.emoji.push(`${cmd}: ${l}`);
-      for (const t of TERMS) if (l.toLowerCase().includes(t.toLowerCase())) rendered.terms.push(`${cmd}: ${l}`);
+      for (const t of TERMS) if (new RegExp(`(?<!\\p{L})${t}(?!\\p{L})`, "iu").test(l)) rendered.terms.push(`${cmd}: ${l}`);
     }
   }
   if (langCmds.includes("app.language.english")) await inChild("filmcraft.execute('app.language.english')").catch(() => {});

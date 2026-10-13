@@ -214,14 +214,16 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     let custom: Vec<String> = presets["custom"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Preset:")).size(13.0).color(t.text_dim));
-        let shown = if modified { tlf!("{active} (modified)", active) } else { active.clone() };
+        // Evora fork (E9-L5): preset names are displayed through i18n::t (display override catalog,
+        // e.g. a built-in preset named after a third-party product); ids and commands are unchanged.
+        let shown = if modified { tlf!("{active} (modified)", active = crate::i18n::t(&active)) } else { crate::i18n::t(&active).to_string() };
         let r = egui::ComboBox::from_id_salt("shortcuts-preset").width(280.0).selected_text(shown).show_ui(ui, |ui| {
             for name in builtin.iter().chain(custom.iter()) {
-                let r = ui.selectable_label(*name == active && !modified, name);
+                let r = ui.selectable_label(*name == active && !modified, crate::i18n::t(name));
                 app.auto.add(&format!("shortcuts.preset.{name}"), r.rect, name);
                 if r.clicked() {
                     exec(app, "shortcuts.loadPreset", json!({"name": name}));
-                    app.shortcut_editor.message = tlf!("Loaded “{name}”", name);
+                    app.shortcut_editor.message = tlf!("Loaded “{name}”", name = crate::i18n::t(name));
                 }
             }
         });
