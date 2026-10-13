@@ -43,3 +43,68 @@ id	✖ different file	Berkas berbeda
 ja	✖ different file	別のファイル
 pt-br	✖ different file	Arquivo diferente
 zh-cn	✖ different file	不同文件
+
+# --- E9: neutral names instead of third-party product names (D-16, proposals pending review) -----
+# Lumetri (Adobe) → color grading. Every language whose upstream catalog translates the string has
+# its own row; the others fall back to the English row. Lightroom, Acrobat, Cycore: not in this
+# repository's displayed strings (measured). Identifiers (effect "lumetri", panel ids, command ids)
+# are unchanged: only what is displayed.
+en	Lumetri	Color Grading
+es	Lumetri	Etalonaje
+fr	Lumetri	Étalonnage
+id	Lumetri	Gradasi Warna
+ja	Lumetri	カラーグレーディング
+pt-br	Lumetri	Gradação de cor
+zh-cn	Lumetri	调色
+en	Lumetri Color	Color Grading
+es	Lumetri Color	Etalonaje
+fr	Lumetri Color	Étalonnage
+id	Lumetri Color	Gradasi Warna
+ja	Lumetri Color	カラーグレーディング
+pt-br	Lumetri Color	Gradação de cor
+zh-cn	Lumetri Color	调色
+de	Lumetri Color	Farbgradierung
+ru	Lumetri Color	Цветокоррекция
+uk	Lumetri Color	Кольорокорекція
+en	Lumetri Scopes	Video Scopes
+es	Lumetri Scopes	Ámbitos de video
+fr	Lumetri Scopes	Oscilloscopes vidéo
+id	Lumetri Scopes	Skop Video
+ja	Lumetri Scopes	ビデオスコープ
+pt-br	Lumetri Scopes	Escopos de vídeo
+zh-cn	Lumetri Scopes	视频示波器
+de	Lumetri Scopes	Video-Scopes
+ru	Lumetri Scopes	Видеоскопы
+uk	Lumetri Scopes	Відеоскопи
+en	Lumetri Presets	Color Grading Presets
+es	Lumetri Presets	Ajustes preestablecidos de etalonaje
+fr	Lumetri Presets	Préréglages d'étalonnage
+id	Lumetri Presets	Preset Gradasi Warna
+ja	Lumetri Presets	カラーグレーディングプリセット
+pt-br	Lumetri Presets	Predefinições de gradação de cor
+zh-cn	Lumetri Presets	调色预设
+en	Add Lumetri Color to clip	Add Color Grading to clip
+es	Add Lumetri Color to clip	Añadir etalonaje al clip
+fr	Add Lumetri Color to clip	Ajouter l'effet Étalonnage au clip
+id	Add Lumetri Color to clip	Tambahkan Gradasi Warna ke klip
+ja	Add Lumetri Color to clip	クリップにカラーグレーディングを追加
+pt-br	Add Lumetri Color to clip	Adicionar gradação de cor ao clipe
+zh-cn	Add Lumetri Color to clip	向剪辑添加调色
+en	For color management parameters, go to the Settings tab in the Lumetri Color panel.	For color management parameters, go to the Settings tab in the Color Grading panel.
+es	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para los parámetros de gestión del color, ve a la pestaña Ajustes del panel Etalonaje.
+fr	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Pour les paramètres de gestion des couleurs, accédez à l'onglet Paramètres du panneau Étalonnage.
+id	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Gradasi Warna.
+ja	For color management parameters, go to the Settings tab in the Lumetri Color panel.	カラーマネジメントのパラメーターは、カラーグレーディングパネルの「設定」タブにあります。
+pt-br	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Gradação de cor.
+zh-cn	For color management parameters, go to the Settings tab in the Lumetri Color panel.	有关色彩管理参数，请前往调色面板中的“设置”选项卡。
+# Engine command and history labels, shown through i18n::t (keyboard shortcuts editor, History
+# panel); untranslated upstream, so English only.
+en	List Lumetri Presets	List Color Grading Presets
+en	Apply Lumetri Preset	Apply Color Grading Preset
+en	Lumetri Preset Thumbnails	Color Grading Preset Thumbnails
+en	Toggle Lumetri Section	Toggle Color Grading Section
+en	Read Lumetri Scopes	Read Video Scopes
+en	Lumetri Section	Color Grading Section
+# Keyboard shortcut preset (engine constant PREMIERE_PRESET), shown through i18n::t by the
+# shortcuts editor (Evora exception E9-L5 in panels/shortcuts_dialog.rs).
+en	Premiere Pro Compatible	Standard NLE Layout

@@ -82,6 +82,7 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!entries.is_empty());
         let codes: Vec<&str> = Language::ALL.iter().map(|l| l.code()).collect();
+        let engine = engine_sources();
         for (i, (lang, src, display)) in entries.iter().enumerate() {
             assert!(codes.contains(&lang.as_str()), "unknown language {lang:?} for {src:?}");
             assert!(entries.iter().take(i).all(|(l, s, _)| (l, s) != (lang, src)), "duplicate override {lang} {src:?}");
@@ -93,8 +94,58 @@ mod tests {
             // every overridden source has an English override, shown where no translation exists
             assert!(entries.iter().any(|(l, s, _)| l == "en" && s == src), "no English override for {src:?}");
             // and is a string the interface really asks for (no dead override)
-            assert!(Language::ALL.iter().any(|l| l.has(src)), "override of a string no catalog knows: {src:?}");
+            assert!(Language::ALL.iter().any(|l| l.has(src)) || engine.contains(src), "override of a string nothing displays: {src:?}");
         }
+    }
+
+    /// English strings the engine hands to `i18n::t` without any upstream catalog entry: command
+    /// labels (keyboard shortcuts editor), built-in shortcut presets (shortcuts editor) and the
+    /// history label of `lumetri.setSection` (crates/engine/src/color.rs, History panel).
+    fn engine_sources() -> Vec<String> {
+        let mut out: Vec<String> = filmcraft_engine::Session::default()
+            .execute("command.list", serde_json::json!({}))
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|c| c["label"].as_str().map(str::to_string))
+            .collect();
+        out.extend(filmcraft_engine::shortcuts::BUILTIN_PRESETS.iter().map(|p| p.to_string()));
+        out.push("Lumetri Section".into());
+        out
+    }
+
+    /// Third-party product names the interface must not display (D-16), matched as words.
+    fn sensitive(text: &str) -> Option<&'static str> {
+        let lower = text.to_lowercase();
+        ["lumetri", "lightroom", "acrobat", "premiere", "adobe", "cycore"].into_iter().find(|t| {
+            lower.match_indices(t).any(|(i, _)| {
+                let before = lower[..i].chars().next_back();
+                let after = lower[i + t.len()..].chars().next();
+                !before.is_some_and(char::is_alphabetic) && !after.is_some_and(char::is_alphabetic)
+            })
+        })
+    }
+
+    /// E9, checked on the strings as `Language::tr` returns them, in every language, for every
+    /// catalog key and every engine string shown through `i18n::t`.
+    #[test]
+    fn no_sensitive_term_is_displayed_in_any_language() {
+        let mut sources = all_sources();
+        sources.extend(engine_sources());
+        let mut shown: Vec<String> = Vec::new();
+        for lang in Language::ALL {
+            for src in &sources {
+                let text = lang.tr(src);
+                if let Some(t) = sensitive(text) {
+                    shown.push(format!("{} [{t}]: {src:?} → {text:?}", lang.code()));
+                }
+            }
+        }
+        assert!(shown.is_empty(), "sensitive terms displayed: {shown:#?}");
+        // matched as words: "Volumetric Rays" is not "Lumetri"
+        assert_eq!(sensitive("Volumetric Rays"), None);
+        assert_eq!(sensitive("Lumetri-Farbe"), Some("lumetri"));
     }
 
     #[test]
@@ -108,6 +159,12 @@ mod tests {
         assert_eq!(Language::Es.tr("File"), "Archivo");
         assert_eq!(Language::En.tr("File"), "File");
         assert_eq!(Language::Fr.tr("An untranslated label"), "An untranslated label");
+        // E9: neutral names, translated where the upstream catalog translates the string
+        assert_eq!(Language::En.tr("Lumetri Color"), "Color Grading");
+        assert_eq!(Language::Fr.tr("Lumetri Scopes"), "Oscilloscopes vidéo");
+        assert_eq!(Language::Ru.tr("Lumetri Color"), "Цветокоррекция");
+        assert_eq!(Language::De.tr("Lumetri Presets"), "Color Grading Presets");
+        assert_eq!(Language::Ja.tr("Premiere Pro Compatible"), "Standard NLE Layout");
     }
 
     /// E10, checked on the strings as `Language::tr` returns them, in every language.
