@@ -22,6 +22,8 @@
 //! refused the same way ([`chinese_font_available`]).
 
 mod catalog;
+// Evora fork (E10, E9): display override catalog, see overrides.tsv.
+mod overrides;
 
 use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
@@ -178,8 +180,12 @@ impl Language {
     }
 
     /// Translate an English UI string; unknown strings come back unchanged.
+    ///
+    /// Evora fork (E10, E9): the display override catalog (`overrides.tsv`) comes first for the
+    /// language, then the upstream catalog, then the English override (the corrected source text).
     pub fn tr(self, text: &str) -> &str {
-        self.catalog().and_then(|c| c.plain(text)).unwrap_or(text)
+        let (own, english) = overrides::lookup(self.code(), text);
+        own.or_else(|| self.catalog().and_then(|c| c.plain(text))).or(english).unwrap_or(text)
     }
 
     /// Does this language's catalog translate `text`? (English never does: it is the source.)

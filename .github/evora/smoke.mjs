@@ -414,6 +414,8 @@ console.log(
     `Canevas : ${JSON.stringify(report.checks.canvas ?? null)}`,
     `Au rendu (menus) : ${Object.keys(report.rendered?.languages ?? {}).length} langues, émojis ${report.rendered?.emoji.length ?? "?"} (${emojiMode}), termes sensibles ${report.rendered?.terms.length ?? "?"} (${termsMode})`,
     `Événements journalisés : ${report.events?.length ?? 0} ; bloquants : ${report.blockingEvents?.length ?? "?"}`,
+    ...(report.events ?? []).map((e) => `  - ${e.role} gen ${e.gen} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).replace(/\n/g, " ").slice(0, 300)}`),
+    `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
     report.failures.length ? `ROUGE (${report.failures.length} échec(s))` : "VERT",
   ].join("\n"),
 );
