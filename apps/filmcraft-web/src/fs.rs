@@ -48,8 +48,9 @@ struct Fs {
     failed: HashMap<(u32, u64), String>,
     /// Called when fetched bytes arrive (repaint the UI so pending frames are retried).
     on_data: Option<Rc<dyn Fn()>>,
-    /// Called after a file was written (path, bytes): the app offers it as a download.
-    on_write: Option<Rc<dyn Fn(&str, &[u8])>>,
+    /// Called after a file was written (path, bytes): the app offers it as a download, or (Evora
+    /// fork, patch E4) hands it to Evora's shell. An error fails the write.
+    on_write: Option<Rc<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
 }
 
 thread_local! {
@@ -62,8 +63,8 @@ pub fn set_on_data(f: impl Fn() + 'static) {
     FS.with(|fs| fs.borrow_mut().on_data = Some(Rc::new(f)));
 }
 
-/// Hook for written files (downloads).
-pub fn set_on_write(f: impl Fn(&str, &[u8]) + 'static) {
+/// Hook for written files (downloads; inside Evora, the shell). An error fails the write.
+pub fn set_on_write(f: impl Fn(&str, &[u8]) -> Result<(), String> + 'static) {
     FS.with(|fs| fs.borrow_mut().on_write = Some(Rc::new(f)));
 }
 
@@ -347,7 +348,7 @@ impl Services for WebServices {
         if !path.starts_with("/opfs/")
             && let Some(h) = hook
         {
-            h(path, data);
+            h(path, data).map_err(io::Error::other)?;
         }
         Ok(())
     }

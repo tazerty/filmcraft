@@ -10,6 +10,7 @@ quand il existe, et rend 1 si la porte est bloquante et franchie.
   catalogs ROOT [options]     émojis/symboles (E10) et termes sensibles (E9) des chaînes affichées
   csp INDEX OUT               empreintes sha256 des scripts inline d'index.html (CSP)
   sizes SITE ZIP              tailles brutes, .br et .gz
+  hostcfg ZIP                 evora-host.json livré vide (pont EHP muet), sans copie précompressée
 """
 
 import base64
@@ -400,6 +401,39 @@ def cmd_sizes(site, zpath):
     return 0
 
 
+# --- evora-host.json (E4) -----------------------------------------------------------------------
+
+HOSTCFG_EXPECTED = b'{"parentOrigins": []}\n'
+
+
+def cmd_hostcfg(zpath):
+    """Le pont EHP n'admet que les origines parentes que liste evora-host.json, écrit par le
+    provisionnement d'Evora. L'artefact le livre vide (pont muet) et sans .br ni .gz, qu'un serveur
+    pourrait servir à la place du fichier provisionné."""
+    with zipfile.ZipFile(zpath) as z:
+        names = z.namelist()
+        found = [n for n in names if n.split("/")[-1].startswith("evora-host.json")]
+        roots = [n for n in found if n.count("/") == 1 and n.endswith("/evora-host.json")]
+        body = z.read(roots[0]) if len(roots) == 1 else None
+    problems = []
+    if len(roots) != 1:
+        problems.append(f"evora-host.json à la racine du site : {len(roots)} (attendu : 1)")
+    elif body != HOSTCFG_EXPECTED:
+        problems.append(f"contenu inattendu : {body!r} (attendu : {HOSTCFG_EXPECTED!r})")
+    extra = [n for n in found if n not in roots]
+    if extra:
+        problems.append("copies en trop : " + ", ".join(extra))
+    text = "### Porte « evora-host.json » (bloquante)\n\n"
+    text += ("`evora-host.json` livré vide, seul : pont EHP muet tant que le provisionnement ne l'écrit pas (VERT)." if not problems
+             else "ROUGE :\n\n" + "\n".join(f"- {p}" for p in problems))
+    print(text)
+    summary(text)
+    if problems:
+        print("::error::evora-host.json : " + " ; ".join(problems))
+        return 1
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -418,6 +452,8 @@ def main(argv):
         return cmd_csp(args[0], args[1])
     if cmd == "sizes":
         return cmd_sizes(args[0], args[1])
+    if cmd == "hostcfg":
+        return cmd_hostcfg(args[0])
     print(f"sous-commande inconnue : {cmd}")
     return 2
 
