@@ -33,7 +33,7 @@ const emojiMode = arg("emoji", "report");
 const termsMode = arg("terms", "report");
 const TIMEOUT_MS = Number(arg("timeout", "180000"));
 const langChecks = process.argv.includes("--lang-checks");
-const nsChecks = process.argv.includes("--ns-checks");
+const storageChecks = process.argv.includes("--storage-checks");
 const themeChecks = process.argv.includes("--theme-checks");
 if (!existsSync(join(site, "index.html"))) {
   console.error(`::error::index.html introuvable dans ${site}`);
@@ -460,47 +460,46 @@ try {
     }
   }
 
-  // E5 : espace de noms de stockage (?ns=) : écritures OPFS sous ns-<ns>/, rien de visible d'un
-  // autre espace, purge, et un espace invalide coupe OPFS (échec fermé)
-  if (nsChecks) {
+  // E5 (correctif) : l'URL ne nomme plus l'espace de noms de stockage. Sans ?host=evora, le
+  // comportement amont est inchangé (racine OPFS) et ?ns= est sans effet ; avec ?host=evora, rien
+  // n'est écrit tant qu'evora:init n'a pas nommé l'espace (échec fermé, même projet modifié) ; la
+  // purge n'a plus d'entrée JavaScript (filmcraft.purgeStorage retiré).
+  if (storageChecks) {
     const listRoot =
       "(async () => { const r = await navigator.storage.getDirectory(); const out = []; for await (const [n, h] of r.entries()) out.push(n + (h.kind === 'directory' ? '/' : '')); return out.sort(); })()";
-    const listNs = (ns) =>
-      `(async () => { try { const r = await navigator.storage.getDirectory(); const d = await r.getDirectoryHandle('ns-${ns}'); const out = []; for await (const [n] of d.entries()) out.push(n); return out.sort(); } catch (e) { return 'absent'; } })()`;
-    const A = "evoraTestNsA1";
-    const B = "evoraTestNsB2";
-    report.ns = {};
-    report.ns.rootBefore = await inChild(listRoot).catch((e) => String(e));
-    let l = await reload(`empty&ns=${A}`);
-    const infoA = await inChild("filmcraft.info()").catch(() => null);
-    report.ns.infoA = { ready: !!l?.readyMs, storageNamespace: infoA?.storageNamespace, opfs: infoA?.opfs };
-    if (!l?.readyMs || infoA?.storageNamespace !== true) fail(`E5 : espace de noms non pris en compte (${JSON.stringify(report.ns.infoA)})`);
-    report.ns.change = await inChild(`filmcraft.execute("file.newSequence", {name: "E5"}).then(() => true, (e) => String(e))`).catch((e) => String(e));
-    let inA = "absent";
+    const clearRoot =
+      "(async () => { const r = await navigator.storage.getDirectory(); for await (const [n] of r.entries()) await r.removeEntry(n, { recursive: true }); return true; })()";
+    const edit = (name) => inChild(`filmcraft.execute("file.newSequence", {name: ${JSON.stringify(name)}}).then(() => true, (e) => String(e))`).catch((e) => String(e));
+    report.storageE5 = {};
+    // 1. ?ns= ignoré : la récupération s'écrit à la racine, comme l'amont, sans dossier d'espace
+    report.storageE5.cleared = await inChild(clearRoot).catch((e) => String(e));
+    let l = await reload("empty&norecover&ns=evoraTestNsA1");
+    const infoNs = await inChild("filmcraft.info()").catch(() => null);
+    report.storageE5.ns = { ready: !!l?.readyMs, storage: infoNs?.storage, opfs: infoNs?.opfs, edit: await edit("E5-ns") };
+    let rootNs = [];
     for (let i = 0; i < 40; i++) {
-      inA = await inChild(listNs(A)).catch(() => "absent");
-      if (Array.isArray(inA) && inA.includes("recovery")) break;
+      rootNs = await inChild(listRoot).catch(() => []);
+      if (Array.isArray(rootNs) && rootNs.includes("recovery/")) break;
       await sleep(500);
     }
-    const rootA = await inChild(listRoot).catch((e) => String(e));
-    report.ns.afterChangeA = { root: rootA, inA };
-    if (!(Array.isArray(inA) && inA.includes("recovery"))) fail(`E5 : aucune écriture de récupération sous ns-${A} (${JSON.stringify(inA)})`);
-    const before = Array.isArray(report.ns.rootBefore) ? report.ns.rootBefore : [];
-    const leaked = Array.isArray(rootA) ? rootA.filter((n) => !n.startsWith("ns-") && !before.includes(n)) : [];
-    if (leaked.length) fail(`E5 : écritures hors espace de noms à la racine OPFS : ${JSON.stringify(leaked)}`);
-    l = await reload(`empty&ns=${B}`);
-    report.ns.inB = await inChild(listNs(B)).catch(() => "absent");
-    if (Array.isArray(report.ns.inB) && report.ns.inB.includes("recovery")) fail("E5 : la récupération de A apparaît sous B");
-    l = await reload(`empty&norecover&ns=${A}`);
-    const purged = await inChild("filmcraft.purgeStorage()").catch((e) => String(e));
-    const rootPurged = await inChild(listRoot).catch((e) => String(e));
-    report.ns.purge = { purged, root: rootPurged };
-    if (purged !== true) fail(`E5 : purge de ns-${A} : ${JSON.stringify(purged)}`);
-    if (Array.isArray(rootPurged) && rootPurged.includes(`ns-${A}/`)) fail(`E5 : ns-${A} encore présent après la purge`);
-    l = await reload("empty&ns=bad");
-    const infoBad = await inChild("filmcraft.info()").catch(() => null);
-    report.ns.invalid = { ready: !!l?.readyMs, storageNamespace: infoBad?.storageNamespace, opfs: infoBad?.opfs };
-    if (infoBad?.opfs !== false) fail(`E5 : un espace de noms invalide laisse OPFS actif (${JSON.stringify(report.ns.invalid)})`);
+    report.storageE5.ns.root = rootNs;
+    if (!l?.readyMs || infoNs?.storage !== "root") fail(`E5 : sans ?host=evora le stockage doit rester celui de l'amont (${JSON.stringify(report.storageE5.ns)})`);
+    if (!(Array.isArray(rootNs) && rootNs.includes("recovery/"))) fail(`E5 : aucune écriture de récupération à la racine sans ?host=evora (${JSON.stringify(rootNs)})`);
+    if (Array.isArray(rootNs) && rootNs.some((n) => n.startsWith("ns-") || n.startsWith("evora-corte"))) fail(`E5 : ?ns= a encore un effet (${JSON.stringify(rootNs)})`);
+    report.storageE5.purgeApi = await inChild("typeof filmcraft.purgeStorage").catch((e) => String(e));
+    if (report.storageE5.purgeApi !== "undefined") fail(`E5 : filmcraft.purgeStorage existe encore (${report.storageE5.purgeApi})`);
+    // 2. ?host=evora sans evora:init : OPFS fermé, aucune écriture même avec un projet modifié
+    report.storageE5.cleared2 = await inChild(clearRoot).catch((e) => String(e));
+    l = await reload("empty&host=evora");
+    const infoHost = await inChild("filmcraft.info()").catch(() => null);
+    report.storageE5.host = { ready: !!l?.readyMs, storage: infoHost?.storage, opfs: infoHost?.opfs, edit: await edit("E5-host") };
+    await sleep(7000); // plus que l'intervalle de l'instantané de récupération (5 s)
+    const dirty = await inChild("filmcraft.execute('project.inspect').then((p) => p.dirty, (e) => String(e))").catch((e) => String(e));
+    report.storageE5.host.dirty = dirty;
+    report.storageE5.host.root = await inChild(listRoot).catch((e) => String(e));
+    if (!l?.readyMs || infoHost?.storage !== "closed" || infoHost?.opfs !== false) fail(`E5 : avec ?host=evora, OPFS doit rester fermé avant evora:init (${JSON.stringify(report.storageE5.host)})`);
+    if (dirty !== true) fail(`E5 : le projet n'est pas modifié, la mesure ne prouve rien (${JSON.stringify(dirty)})`);
+    if (!Array.isArray(report.storageE5.host.root) || report.storageE5.host.root.length !== 0) fail(`E5 : écritures OPFS avant evora:init : ${JSON.stringify(report.storageE5.host.root)}`);
   }
 
   // E5 (mesure) : clés localStorage et bases IndexedDB réellement présentes pour l'origine moteur
@@ -546,7 +545,7 @@ console.log(
     ...(report.events ?? []).map((e) => `  - ${e.role} gen ${e.gen} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).replace(/\n/g, " ").slice(0, 300)}`),
     `Liens (E7) : ${JSON.stringify(report.links ?? null)}`,
     `Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
-    `Espace de noms de stockage (E5) : ${JSON.stringify(report.ns ?? "non vérifié")}`,
+    `Stockage (E5, correctif) : ${JSON.stringify(report.storageE5 ?? "non vérifié")}`,
     `Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
     `Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
@@ -564,7 +563,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- Au rendu (menus, ${Object.keys(report.rendered?.languages ?? {}).length} langues) : émojis ${report.rendered?.emoji.length ?? "?"} (\`${emojiMode}\`), termes sensibles ${report.rendered?.terms.length ?? "?"} (\`${termsMode}\`)`,
     `- Liens vers l'extérieur (E7) : ${JSON.stringify(report.links ?? null)}`,
     `- Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
-    `- Espace de noms de stockage (E5) : ${JSON.stringify(report.ns ?? "non vérifié")}`,
+    `- Stockage (E5, correctif) : ${JSON.stringify(report.storageE5 ?? "non vérifié")}`,
     `- Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
     `- Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `- Événements bloquants : ${report.blockingEvents?.length ?? "?"} ; verdict : **${report.failures.length ? "ROUGE" : "VERT"}**`,

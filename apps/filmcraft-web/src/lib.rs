@@ -188,18 +188,19 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("crossOriginIsolated", json!(isolated));
     set_info("threads", json!(false));
     set_info("frameWorkers", json!("cooperative"));
-    // Evora fork (patch E5): the storage namespace comes before any OPFS access.
-    let ns = query_value("ns");
-    opfs::set_namespace(ns.as_deref());
-    if ns.is_some() && !opfs::namespaced() {
-        log::warn!("invalid storage namespace (8 to 128 of A-Z a-z 0-9 _ -): OPFS is off");
+    // Evora fork (patch E5): inside Evora's shell (`?host=evora`), OPFS stays closed until
+    // `evora:init` names the account's storage namespace; the URL never names it. Nothing kept by an
+    // earlier session (possibly another account's) is read back at start-up.
+    let hosted = query_value("host").as_deref() == Some("evora");
+    if hosted {
+        opfs::enter_host_mode();
     }
-    set_info("storageNamespace", json!(opfs::namespaced()));
+    set_info("storage", json!(opfs::describe()));
     set_info("opfs", json!(opfs::available()));
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
-    let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
-    let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    let restored = if !hosted && opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
+    let recovered = if hosted || query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
     webcodecs::probe().await;
 
     api::install()?;
