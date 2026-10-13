@@ -1,28 +1,18 @@
-//! The ArtCraft wordmark (first-party trademark, used with permission; see `docs/brand/` and
-//! AGENTS.md §1.8), decoded once and kept as a texture.
+//! The product wordmark, drawn on the About dialog and the Home screen.
+//!
+//! Evora fork (patch E1): the ArtCraft wordmark is a trademark that is not open source, and the
+//! ArtCraft trademark licence requires a modified version to remove it (docs/brand/LICENSE-brand.txt,
+//! "Forks and modified versions"). This build embeds no wordmark: [`wordmark`] returns `None` and
+//! callers lay out their text without it. The files in `docs/brand/` stay in the repository (a copy
+//! of the repository may keep them) but are no longer compiled into any binary.
 
-const LOGO_LIGHT_INK: &[u8] = include_bytes!("../../../docs/brand/artcraft-logo-white.png");
-const LOGO_DARK_INK: &[u8] = include_bytes!("../../../docs/brand/artcraft-logo.png");
-
-/// The wordmark for a dark (`dark = true`) or light UI: light ink on dark themes. Its aspect
-/// ratio is width / height of the returned texture.
-pub fn wordmark(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new(("artcraft-wordmark", dark));
-    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
-        return Some(t);
-    }
-    let bytes = if dark { LOGO_LIGHT_INK } else { LOGO_DARK_INK };
-    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
-    // Large enough to stay sharp at 2x for the sizes we draw (≤ 320 pt wide).
-    let img = img.resize(1024, 1024, image::imageops::FilterType::Lanczos3).to_rgba8();
-    let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-    let tex = ctx.load_texture("artcraft-wordmark", color, egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
-    Some(tex)
+/// The wordmark for a dark (`dark = true`) or light UI. This build has none.
+pub fn wordmark(_ctx: &egui::Context, _dark: bool) -> Option<egui::TextureHandle> {
+    None
 }
 
 /// Draw the wordmark `height` points tall with its left edge at `left_center` (vertically centred).
-/// Returns the drawn rect.
+/// Returns the drawn rect, or `None` when there is no wordmark to draw (always, in this build).
 pub fn paint_wordmark(ui: &egui::Ui, left_center: egui::Pos2, height: f32, dark: bool) -> Option<egui::Rect> {
     let tex = wordmark(ui.ctx(), dark)?;
     let [w, h] = tex.size();
