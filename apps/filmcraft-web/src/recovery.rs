@@ -7,6 +7,9 @@
 //!   through wasm memory), so the snapshot's `/files/<name>` references resolve after a reload.
 //! - At start-up a dirty snapshot is reopened (`?norecover` skips it, `?fresh` also skips the media).
 //!   A skipped snapshot stays dirty until this session writes its own ([`crate::recovery_policy`]).
+//! - Evora fork (patch E5): inside Evora's shell nothing is read back at start-up, snapshots go to
+//!   the account's namespace once `evora:init` has named it ([`crate::opfs`]), and imported media
+//!   are not copied to the browser's storage.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -98,7 +101,7 @@ pub async fn load_snapshot() -> Option<(String, Vec<u8>)> {
 
 /// Keep a copy of an imported file in OPFS (background).
 pub fn keep_media(path: &str, file: &web_sys::File) {
-    if !opfs::available() || file.size() > KEEP_MAX {
+    if !opfs::available() || opfs::hosted() || file.size() > KEEP_MAX {
         return;
     }
     let Some(name) = path.strip_prefix("/files/").map(str::to_string) else { return };
