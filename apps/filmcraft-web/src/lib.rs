@@ -136,6 +136,23 @@ fn query_flag(name: &str) -> bool {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).is_some_and(|p| p.has(name))
 }
 
+/// The value of the page's `?name=` parameter, if any.
+fn query_value(name: &str) -> Option<String> {
+    web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).and_then(|p| p.get(name))
+}
+
+/// Evora fork (patch E3): the interface language Evora's shell imposes with `?lang=`, whatever
+/// the saved preference. Unknown or undecided languages (`pt`, D-23) keep the canvas in English;
+/// Japanese and Chinese still need a font (otherwise the engine stays in English and says so).
+fn impose_language(app: &mut FilmcraftApp) {
+    let Some(tag) = query_value("lang") else { return };
+    let code = filmcraft_ui_egui::i18n::Language::from_evora(&tag).map_or("en", |l| l.code());
+    if let Err(e) = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": code})) {
+        log::warn!("language {code}: {e}");
+    }
+    set_info("language", json!({"requested": tag, "applied": code}));
+}
+
 /// Entry point (called by the page's bootstrap script once the wasm module is instantiated).
 #[wasm_bindgen]
 pub async fn start(canvas_id: String) -> Result<(), JsValue> {
@@ -202,6 +219,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
+                impose_language(&mut app);
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));

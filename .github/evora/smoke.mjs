@@ -32,6 +32,7 @@ const chrome = arg("chrome", "google-chrome");
 const emojiMode = arg("emoji", "report");
 const termsMode = arg("terms", "report");
 const TIMEOUT_MS = Number(arg("timeout", "180000"));
+const langChecks = process.argv.includes("--lang-checks");
 if (!existsSync(join(site, "index.html"))) {
   console.error(`::error::index.html introuvable dans ${site}`);
   process.exit(2);
@@ -228,6 +229,7 @@ try {
   const events = [];
   let childSession = null;
   const contexts = new Map(); // frameId -> contextId (repli si l'iframe n'est pas hors processus)
+  const okGens = new Set(); // générations de document du moteur qui ont démarré (leurs erreurs comptent)
   cdp.on(async (msg) => {
     const s = msg.sessionId ? sessions.get(msg.sessionId) : null;
     const role = s ? s.role : "browser";
@@ -314,6 +316,8 @@ try {
   }
   report.wallToReadyMs = Date.now() - t0;
   report.load = load;
+  const markReady = () => okGens.add(mode === "oopif" ? sessions.get(childSession).gen : -1);
+  if (load && load.readyMs) markReady();
   if (!load || !load.readyMs) fail(`le moteur ne s'initialise pas : ${JSON.stringify(load)}`);
   if (load?.error) fail(`erreur de démarrage : ${load.error}`);
   await sleep(3000); // laisse passer les premières images (paniques tardives)
@@ -395,13 +399,57 @@ try {
   if (rendered.emoji.length && emojiMode === "block") fail(`émojis affichés dans les menus : ${rendered.emoji.length}`);
   if (rendered.terms.length && termsMode === "block") fail(`termes sensibles affichés dans les menus : ${rendered.terms.length}`);
 
-  // erreurs : toutes celles de la parente, et celles du dernier document du moteur
-  const childGen = mode === "oopif" ? sessions.get(childSession).gen : sessions.get(ps).gen;
+  // Recharge l'iframe du moteur avec une autre requête (la parente change son src) et attend son
+  // démarrage ; les erreurs de ce document comptent alors comme bloquantes.
+  async function reload(query) {
+    await evaluate(cdp, ps, `document.getElementById('engine').src = ${JSON.stringify(engineOrigin + "/index.html?")} + ${JSON.stringify(query)}; true`);
+    const until = Date.now() + 90000;
+    while (Date.now() < until) {
+      try {
+        const l = await inChild("(() => { const l = window.filmcraftLoad || {}; return { readyMs: l.readyMs ?? null, error: l.error ?? null, search: location.search }; })()");
+        if (l.search.startsWith("?" + query) && (l.readyMs || l.error)) {
+          if (l.readyMs) markReady();
+          return l;
+        }
+      } catch {
+        // document en cours de remplacement
+      }
+      await sleep(250);
+    }
+    return null;
+  }
+
+  // E3 : langue imposée par ?lang= (codes Evora ; zh-Hans → zh-cn ; pt en attente de D-23)
+  if (langChecks) {
+    report.lang = {};
+    for (const [tag, code, saveAs] of [
+      ["fr", "fr", "Enregistrer sous…"],
+      ["pt", "en", "Save As…"],
+      ["ko", "en", "Save As…"],
+      ["zh-Hans", "zh-cn", null],
+    ]) {
+      const l = await reload(`empty&lang=${encodeURIComponent(tag)}`);
+      if (!l || !l.readyMs) {
+        fail(`E3 ${tag} : le moteur ne redémarre pas (${JSON.stringify(l)})`);
+        continue;
+      }
+      await sleep(500);
+      const info = await inChild("filmcraft.info()").catch(() => null);
+      const items = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+      const label = (Array.isArray(items) ? items : []).find((m) => m.id === "file.saveAs")?.label ?? null;
+      report.lang[tag] = { applied: info?.language?.applied ?? null, saveAs: label, readyMs: l.readyMs };
+      if (info?.language?.applied !== code) fail(`E3 ${tag} : langue appliquée ${info?.language?.applied ?? "?"}, attendu ${code}`);
+      if (saveAs && label !== saveAs) fail(`E3 ${tag} : « Save As… » affiché « ${label} », attendu « ${saveAs} »`);
+    }
+  }
+
+  // erreurs : toutes celles de la parente, et celles des documents du moteur qui ont démarré (un
+  // premier document abandonné pour le repli ?webgl ne compte pas)
   report.events = events;
   const blocking = events.filter(
     (e) =>
       (e.kind === "exception" || e.kind === "console.error" || e.kind === "log.error") &&
-      (e.role === "parent" ? true : e.role === "iframe" ? e.gen === childGen : e.role !== "browser"),
+      (e.role === "parent" ? true : e.role === "iframe" ? okGens.has(e.gen) : e.role !== "browser"),
   );
   report.blockingEvents = blocking;
   for (const e of blocking) fail(`${e.role} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).slice(0, 400)}`);
@@ -432,6 +480,7 @@ console.log(
     `Événements journalisés : ${report.events?.length ?? 0} ; bloquants : ${report.blockingEvents?.length ?? "?"}`,
     ...(report.events ?? []).map((e) => `  - ${e.role} gen ${e.gen} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).replace(/\n/g, " ").slice(0, 300)}`),
     `Liens (E7) : ${JSON.stringify(report.links ?? null)}`,
+    `Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
     `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
     report.failures.length ? `ROUGE (${report.failures.length} échec(s))` : "VERT",
   ].join("\n"),
@@ -446,6 +495,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- Canevas : \`${JSON.stringify(report.checks.canvas ?? null)}\``,
     `- Au rendu (menus, ${Object.keys(report.rendered?.languages ?? {}).length} langues) : émojis ${report.rendered?.emoji.length ?? "?"} (\`${emojiMode}\`), termes sensibles ${report.rendered?.terms.length ?? "?"} (\`${termsMode}\`)`,
     `- Liens vers l'extérieur (E7) : ${JSON.stringify(report.links ?? null)}`,
+    `- Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
     `- Événements bloquants : ${report.blockingEvents?.length ?? "?"} ; verdict : **${report.failures.length ? "ROUGE" : "VERT"}**`,
     ...report.failures.map((f) => `  - ${f.replace(/\n/g, " ").slice(0, 300)}`),
   ].join("\n");
