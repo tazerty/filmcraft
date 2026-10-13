@@ -275,4 +275,11 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
         }
         None
     }));
+    // Evora fork (patch E7): the engine runs inside Evora's shell, which owns every link to the
+    // outside. Help menu, About, keyboard help and settings links are not opened (and do not fall
+    // back to `egui::Context::open_url`); see also `WebApp::ui`.
+    app.hooks.open_url = Some(Box::new(|url: &str| {
+        log::info!("external link not opened (Evora): {url}");
+        Ok(())
+    }));
 }

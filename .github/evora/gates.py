@@ -46,7 +46,12 @@ MARKS = [
     ("getartcraft", b"getartcraft", True),
     ("discord.gg", b"discord.gg", True),
 ]
-INFO = [("discord", b"discord", True), ("FilmCraft", b"FilmCraft", False)]
+INFO = [
+    ("discord", b"discord", True),
+    ("FilmCraft", b"FilmCraft", False),
+    ("huggingface.co", b"huggingface.co", True),
+    ("github.com", b"github.com", True),
+]
 
 
 def count(data, pat, icase):
