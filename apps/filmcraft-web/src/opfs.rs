@@ -17,22 +17,80 @@ thread_local! {
     /// Pending writes per path (bytes and the callbacks of every write coalesced into them), and
     /// whether the writer task is running.
     static QUEUE: RefCell<(BTreeMap<String, (Vec<u8>, Vec<Done>)>, bool)> = const { RefCell::new((BTreeMap::new(), false)) };
+    /// Evora fork (patch E5): the storage namespace, or `Err(())` when the one given was invalid.
+    static NAMESPACE: RefCell<Result<Option<String>, ()>> = const { RefCell::new(Ok(None)) };
 }
 
-/// Whether this browser has OPFS (`navigator.storage.getDirectory`).
+/// Evora fork (patch E5): every OPFS path lives under `ns-<namespace>/` when Evora's shell gives a
+/// storage namespace (`?ns=`, an opaque identifier derived from the account). It is a namespace,
+/// not a partition: any script of this origin can still list the whole OPFS, and isolation between
+/// accounts comes from serving the engine on its own origin. An invalid namespace turns OPFS off
+/// (fail closed: nothing is written where another account could find it). Call before any access.
+pub fn set_namespace(ns: Option<&str>) {
+    let v = match ns {
+        None => Ok(None),
+        Some(s) if valid_namespace(s) => Ok(Some(s.to_string())),
+        Some(_) => Err(()),
+    };
+    NAMESPACE.with(|n| *n.borrow_mut() = v);
+}
+
+/// A valid namespace: 8 to 128 characters among `A–Z a–z 0–9 _ -`.
+pub fn valid_namespace(s: &str) -> bool {
+    (8..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Whether a storage namespace is in force.
+pub fn namespaced() -> bool {
+    NAMESPACE.with(|n| matches!(*n.borrow(), Ok(Some(_))))
+}
+
+fn namespace_dir() -> Option<String> {
+    NAMESPACE.with(|n| n.borrow().clone().ok().flatten()).map(|ns| format!("ns-{ns}"))
+}
+
+/// Whether this browser has OPFS (`navigator.storage.getDirectory`) and it may be used.
 pub fn available() -> bool {
+    if NAMESPACE.with(|n| n.borrow().is_err()) {
+        return false;
+    }
     web_sys::window().is_some_and(|w| {
         let storage = js_sys::Reflect::get(&w.navigator(), &"storage".into()).unwrap_or(JsValue::UNDEFINED);
         !storage.is_undefined() && js_sys::Reflect::has(&storage, &"getDirectory".into()).unwrap_or(false)
     })
 }
 
-async fn root() -> Result<FileSystemDirectoryHandle, JsValue> {
+/// The OPFS root of this origin, shared by every namespace.
+async fn origin_root() -> Result<FileSystemDirectoryHandle, JsValue> {
     if !available() {
         return Err("OPFS not available".into());
     }
     let w = web_sys::window().ok_or("no window")?;
     JsFuture::from(w.navigator().storage().get_directory()).await?.dyn_into()
+}
+
+/// The root every path is relative to: the namespace directory when there is one.
+async fn root() -> Result<FileSystemDirectoryHandle, JsValue> {
+    let base = origin_root().await?;
+    let Some(dir) = namespace_dir() else { return Ok(base) };
+    let o = web_sys::FileSystemGetDirectoryOptions::new();
+    o.set_create(true);
+    JsFuture::from(base.get_directory_handle_with_options(&dir, &o)).await?.dyn_into()
+}
+
+/// Evora fork (patch E5): remove the namespace directory and everything in it (Evora's
+/// `evora:purge`: sign-out, account change). `Ok(false)` without a namespace or when nothing was
+/// stored yet.
+pub async fn purge_namespace() -> Result<bool, JsValue> {
+    let Some(dir) = namespace_dir() else { return Ok(false) };
+    let base = origin_root().await?;
+    let o = web_sys::FileSystemRemoveOptions::new();
+    o.set_recursive(true);
+    match JsFuture::from(base.remove_entry_with_options(&dir, &o)).await {
+        Ok(_) => Ok(true),
+        Err(e) if js_sys::Reflect::get(&e, &"name".into()).ok().and_then(|n| n.as_string()).as_deref() == Some("NotFoundError") => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// The directory holding `rel` (created when `create`) and the file name.

@@ -167,6 +167,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("crossOriginIsolated", json!(isolated));
     set_info("threads", json!(false));
     set_info("frameWorkers", json!("cooperative"));
+    // Evora fork (patch E5): the storage namespace comes before any OPFS access.
+    let ns = query_value("ns");
+    opfs::set_namespace(ns.as_deref());
+    if ns.is_some() && !opfs::namespaced() {
+        log::warn!("invalid storage namespace (8 to 128 of A-Z a-z 0-9 _ -): OPFS is off");
+    }
+    set_info("storageNamespace", json!(opfs::namespaced()));
     set_info("opfs", json!(opfs::available()));
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
