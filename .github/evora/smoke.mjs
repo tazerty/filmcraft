@@ -34,6 +34,7 @@ const termsMode = arg("terms", "report");
 const TIMEOUT_MS = Number(arg("timeout", "180000"));
 const langChecks = process.argv.includes("--lang-checks");
 const nsChecks = process.argv.includes("--ns-checks");
+const themeChecks = process.argv.includes("--theme-checks");
 if (!existsSync(join(site, "index.html"))) {
   console.error(`::error::index.html introuvable dans ${site}`);
   process.exit(2);
@@ -444,6 +445,21 @@ try {
     }
   }
 
+  // E2 : accent Evora et apparence imposée (?theme=)
+  if (themeChecks) {
+    report.theme = {};
+    for (const [query, mode, light] of [["empty", "dark", false], ["empty&theme=light", "light", true]]) {
+      const l = await reload(query);
+      const accent = await inChild(`filmcraft.execute("prefs.get", {key: "appearance.highlightColor"})`).catch((e) => String(e));
+      const appearance = await inChild(`filmcraft.execute("prefs.get", {key: "appearance.appearanceMode"})`).catch((e) => String(e));
+      const page = await inChild("({ light: document.documentElement.classList.contains('light'), background: getComputedStyle(document.body).backgroundColor })").catch(() => null);
+      report.theme[query] = { ready: !!l?.readyMs, accent, appearance, page };
+      if (String(accent).toLowerCase() !== "#4f46e5") fail(`E2 ${query} : accent ${JSON.stringify(accent)}, attendu #4f46e5`);
+      if (appearance !== mode) fail(`E2 ${query} : apparence ${JSON.stringify(appearance)}, attendu ${mode}`);
+      if (!page || page.light !== light) fail(`E2 ${query} : écran de chargement ${JSON.stringify(page)}`);
+    }
+  }
+
   // E5 : espace de noms de stockage (?ns=) : écritures OPFS sous ns-<ns>/, rien de visible d'un
   // autre espace, purge, et un espace invalide coupe OPFS (échec fermé)
   if (nsChecks) {
@@ -487,6 +503,11 @@ try {
     if (infoBad?.opfs !== false) fail(`E5 : un espace de noms invalide laisse OPFS actif (${JSON.stringify(report.ns.invalid)})`);
   }
 
+  // E5 (mesure) : clés localStorage et bases IndexedDB réellement présentes pour l'origine moteur
+  report.storage = await inChild(
+    "(async () => ({ localStorage: Object.keys(localStorage), indexedDB: (indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : 'n/a') }))()",
+  ).catch((e) => String(e));
+
   // erreurs : toutes celles de la parente, et celles des documents du moteur qui ont démarré (un
   // premier document abandonné pour le repli ?webgl ne compte pas)
   report.events = events;
@@ -526,6 +547,8 @@ console.log(
     `Liens (E7) : ${JSON.stringify(report.links ?? null)}`,
     `Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
     `Espace de noms de stockage (E5) : ${JSON.stringify(report.ns ?? "non vérifié")}`,
+    `Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
+    `Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
     report.failures.length ? `ROUGE (${report.failures.length} échec(s))` : "VERT",
   ].join("\n"),
@@ -542,6 +565,8 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- Liens vers l'extérieur (E7) : ${JSON.stringify(report.links ?? null)}`,
     `- Langue imposée (E3) : ${JSON.stringify(report.lang ?? "non vérifiée")}`,
     `- Espace de noms de stockage (E5) : ${JSON.stringify(report.ns ?? "non vérifié")}`,
+    `- Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
+    `- Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `- Événements bloquants : ${report.blockingEvents?.length ?? "?"} ; verdict : **${report.failures.length ? "ROUGE" : "VERT"}**`,
     ...report.failures.map((f) => `  - ${f.replace(/\n/g, " ").slice(0, 300)}`),
   ].join("\n");

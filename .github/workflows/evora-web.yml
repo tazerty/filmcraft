@@ -302,7 +302,7 @@ jobs:
           node --version
           google-chrome --version
           node .github/evora/smoke.mjs --site "$x/$NAME" --csp "$x/$NAME/csp-hashes.txt" --out "$RUNNER_TEMP/fumee" \
-            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --ns-checks
+            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --ns-checks --theme-checks
 
       - name: Diagnostic du test de fumée
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
