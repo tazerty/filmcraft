@@ -183,6 +183,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      - name: Porte E7 (graphe livré sans client réseau ni moteur d'inférence)
+        shell: bash
+        run: |
+          cargo tree --locked -p filmcraft-web --target wasm32-unknown-unknown -e normal --prefix none --format '{p}' \
+            | awk '{ print $1 }' | sort -u > "$RUNNER_TEMP/web-crates.txt"
+          n="$(wc -l < "$RUNNER_TEMP/web-crates.txt")"
+          bad="$(grep -E -x 'ureq|reqwest|hyper|hyper-util|h2|rustls|rustls-rustcrypto|native-tls|openssl|candle-core|candle-nn|candle-transformers' "$RUNNER_TEMP/web-crates.txt" | tr '\n' ' ' || true)"
+          echo "crates du graphe web : $n ; interdites : ${bad:-aucune}"
+          {
+            echo "### Porte E7 : graphe livré sans client réseau ni moteur d'inférence (bloquante)"
+            echo
+            echo "$n crates dans le graphe de \`filmcraft-web\` (wasm32, dépendances normales). Interdites (client HTTP ou TLS, inférence Whisper/Kokoro : features whisper, speech-download, neural-voices) : ${bad:-aucune}."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -lt 50 ]; then
+            echo "::error::graphe web anormalement petit ($n crates) : la porte ne mesure rien"
+            exit 1
+          fi
+          if [ -n "$bad" ]; then
+            echo "::error::crates interdites dans le graphe web : $bad"
+            exit 1
+          fi
+
       - name: Licences tierces (cargo-about)
         id: about
         shell: bash

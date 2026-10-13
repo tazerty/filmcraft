@@ -108,3 +108,13 @@ en	Lumetri Section	Color Grading Section
 # Keyboard shortcut preset (engine constant PREMIERE_PRESET), shown through i18n::t by the
 # shortcuts editor (Evora exception E9-L5 in panels/shortcuts_dialog.rs).
 en	Premiere Pro Compatible	Standard NLE Layout
+
+# --- E7: links to the outside are not opened in Evora (apps/filmcraft-web: open_url hook) --------
+# The status line must not claim a link was opened.
+en	Opened {url}	External link not opened: {url}
+es	Opened {url}	Enlace externo no abierto: {url}
+fr	Opened {url}	Lien externe non ouvert : {url}
+id	Opened {url}	Tautan eksternal tidak dibuka: {url}
+ja	Opened {url}	外部リンクは開きません: {url}
+pt-br	Opened {url}	Link externo não aberto: {url}
+zh-cn	Opened {url}	未打开外部链接：{url}

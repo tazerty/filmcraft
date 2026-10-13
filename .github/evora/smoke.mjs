@@ -375,6 +375,22 @@ try {
   }
   if (langCmds.includes("app.language.english")) await inChild("filmcraft.execute('app.language.english')").catch(() => {});
   report.rendered = rendered;
+
+  // E7 : les liens vers l'extérieur ne s'ouvrent pas (aucune fenêtre, aucune navigation, aucune
+  // erreur de bac à sable), qu'ils viennent du menu Aide ou d'un autre écran.
+  const pagesBefore = (await cdp.send("Target.getTargets")).targetInfos.filter((t) => t.type === "page").length;
+  const urlBefore = await inChild("location.href");
+  const links = {};
+  for (const cmd of ["help.github", "help.reportIssue"]) {
+    links[cmd] = await inChild(`filmcraft.execute(${JSON.stringify(cmd)}).then((r) => r && r.url ? r.url : r, (e) => "erreur : " + e)`).catch((e) => String(e));
+  }
+  await sleep(1000);
+  const pagesAfter = (await cdp.send("Target.getTargets")).targetInfos.filter((t) => t.type === "page").length;
+  const urlAfter = await inChild("location.href");
+  report.links = { executed: links, pagesBefore, pagesAfter, sameLocation: urlBefore === urlAfter };
+  if (Object.values(links).some((v) => typeof v !== "string" || v.startsWith("erreur"))) fail(`commandes de lien en erreur : ${JSON.stringify(links)}`);
+  if (pagesAfter !== pagesBefore) fail(`un lien a ouvert une fenêtre (${pagesBefore} → ${pagesAfter} pages)`);
+  if (urlBefore !== urlAfter) fail(`un lien a fait naviguer le moteur : ${urlAfter}`);
   if (langCmds.length === 0) fail("aucune commande de langue trouvée dans les menus : l'analyse au rendu ne mesure rien");
   if (rendered.emoji.length && emojiMode === "block") fail(`émojis affichés dans les menus : ${rendered.emoji.length}`);
   if (rendered.terms.length && termsMode === "block") fail(`termes sensibles affichés dans les menus : ${rendered.terms.length}`);
@@ -415,6 +431,7 @@ console.log(
     `Au rendu (menus) : ${Object.keys(report.rendered?.languages ?? {}).length} langues, émojis ${report.rendered?.emoji.length ?? "?"} (${emojiMode}), termes sensibles ${report.rendered?.terms.length ?? "?"} (${termsMode})`,
     `Événements journalisés : ${report.events?.length ?? 0} ; bloquants : ${report.blockingEvents?.length ?? "?"}`,
     ...(report.events ?? []).map((e) => `  - ${e.role} gen ${e.gen} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).replace(/\n/g, " ").slice(0, 300)}`),
+    `Liens (E7) : ${JSON.stringify(report.links ?? null)}`,
     `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
     report.failures.length ? `ROUGE (${report.failures.length} échec(s))` : "VERT",
   ].join("\n"),
@@ -428,6 +445,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- **Démarrage à froid** : \`readyMs\` ${L.readyMs ?? "?"} ms (wasm instancié à ${L.wasmMs ?? "?"} ms) ; navigation → moteur prêt ${report.wallToReadyMs ?? "?"} ms ; repli WebGL : ${L.search && L.search.includes("webgl") ? "oui" : "non"}`,
     `- Canevas : \`${JSON.stringify(report.checks.canvas ?? null)}\``,
     `- Au rendu (menus, ${Object.keys(report.rendered?.languages ?? {}).length} langues) : émojis ${report.rendered?.emoji.length ?? "?"} (\`${emojiMode}\`), termes sensibles ${report.rendered?.terms.length ?? "?"} (\`${termsMode}\`)`,
+    `- Liens vers l'extérieur (E7) : ${JSON.stringify(report.links ?? null)}`,
     `- Événements bloquants : ${report.blockingEvents?.length ?? "?"} ; verdict : **${report.failures.length ? "ROUGE" : "VERT"}**`,
     ...report.failures.map((f) => `  - ${f.replace(/\n/g, " ").slice(0, 300)}`),
   ].join("\n");
