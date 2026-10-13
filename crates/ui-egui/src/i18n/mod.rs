@@ -463,12 +463,14 @@ mod tests {
     /// Every string the interface translates: menu labels and paths (the native macOS app menu
     /// included), `tl!`/`tlf!` literals, and names translated through `i18n::t`.
     fn interface_strings() -> Vec<String> {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut out = Vec::new();
         for top in crate::menus::MENUS.into_iter().chain(["Audio"]).chain(crate::menus::NATIVE_APP_MENU) {
             push(&mut out, top);
         }
-        for it in crate::menus::menu_items(&app) {
+        // Evora fork (E9, E10): the menus' English *source* labels (`menus::default_menu_items`,
+        // built-in workspaces included); `menus::menu_items` returns what is displayed, and English
+        // display goes through the override catalog (i18n/overrides.tsv).
+        for it in crate::menus::default_menu_items() {
             push(&mut out, &it.label);
             it.path.iter().for_each(|p| push(&mut out, p));
         }
