@@ -113,7 +113,23 @@ impl eframe::App for WebApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.ui(ui, frame);
+        drop_open_urls(ui.ctx());
     }
+}
+
+/// Evora fork (patch E7): no URL is ever opened from the canvas (egui hyperlinks such as the
+/// About ▸ Contributors names, `file://` reveals, any `open_url` fallback). The commands of this
+/// frame are dropped before eframe acts on them; the shell owns links to the outside.
+fn drop_open_urls(ctx: &egui::Context) {
+    ctx.output_mut(|o| {
+        o.commands.retain(|c| match c {
+            egui::OutputCommand::OpenUrl(u) => {
+                log::info!("external link not opened (Evora): {}", u.url);
+                false
+            }
+            _ => true,
+        })
+    });
 }
 
 fn query_flag(name: &str) -> bool {
