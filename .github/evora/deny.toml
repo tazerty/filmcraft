@@ -1,0 +1,72 @@
+# cargo-deny du build web Evora (fork tazerty/filmcraft, futur moteur d'Evora Corte).
+#
+# L'amont n'a pas de deny.toml : ce fichier est propre au fork et ne sert qu'à la CI Evora
+# (.github/workflows/evora-web.yml, `cargo deny --config .github/evora/deny.toml`).
+# Graphe vérifié : celui de l'artefact livré, la crate filmcraft-web compilée pour wasm32.
+#
+# Règle : aucun niveau n'est abaissé sous la valeur par défaut de cargo-deny et aucun avis n'est
+# ignoré en silence. Toute exception future se déclare ici, une par une, avec sa raison, et se
+# reporte dans apps/corte/UPSTREAM.md (dépôt Evora).
+
+[graph]
+targets = ["wasm32-unknown-unknown"]
+exclude-dev = true
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Base RustSec par défaut. Vulnérabilités : erreur (défaut). Crates non maintenues : toutes
+# (défaut « all »). Avis « unsound » : étendu à tout le graphe (le défaut ne couvre que le
+# workspace). Crates retirées (yanked) : avertissement (défaut).
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+ignore = []
+
+[licenses]
+# Licences permissives admises pour tout le graphe. Les licences à réciprocité faible ou propres
+# aux polices ne sont admises que crate par crate (exceptions ci-dessous).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+exceptions = [
+    # Décodage audio MP3/ALAC/Vorbis, utilisé sans modification (MPL-2.0, réciprocité par fichier).
+    { crate = "symphonia", allow = ["MPL-2.0"] },
+    { crate = "symphonia-bundle-flac", allow = ["MPL-2.0"] },
+    { crate = "symphonia-bundle-mp3", allow = ["MPL-2.0"] },
+    { crate = "symphonia-codec-aac", allow = ["MPL-2.0"] },
+    { crate = "symphonia-codec-alac", allow = ["MPL-2.0"] },
+    { crate = "symphonia-codec-pcm", allow = ["MPL-2.0"] },
+    { crate = "symphonia-codec-vorbis", allow = ["MPL-2.0"] },
+    { crate = "symphonia-core", allow = ["MPL-2.0"] },
+    { crate = "symphonia-format-isomp4", allow = ["MPL-2.0"] },
+    { crate = "symphonia-format-ogg", allow = ["MPL-2.0"] },
+    { crate = "symphonia-format-riff", allow = ["MPL-2.0"] },
+    { crate = "symphonia-metadata", allow = ["MPL-2.0"] },
+    { crate = "symphonia-utils-xiph", allow = ["MPL-2.0"] },
+    # Polices par défaut d'egui (feature eframe « default_fonts ») : OFL-1.1 et Ubuntu Font Licence.
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+]
+
+[licenses.private]
+ignore = false
+
+[sources]
+# Seuls crates.io et la révision épinglée de storytold/craft-libs (Cargo.lock) sont admis.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/storytold/craft-libs"]
