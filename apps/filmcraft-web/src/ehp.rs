@@ -450,8 +450,9 @@ fn parse_init(p: &JsValue) -> Option<Init> {
     Some(Init { language, theme, accent, storage_ns, caps, max_document })
 }
 
-/// `evora:init`: language, theme and accent applied; the storage namespace opened once the other
-/// namespaces and upstream's leftovers are purged (§7.1 step 6, §7.7 b); then the answer.
+/// `evora:init`: language, theme and accent go to the UI thread (applied before any later request is
+/// handled); the storage namespace is opened once the other namespaces and upstream's leftovers are
+/// purged (§7.1 step 6, §7.7 b); then the answer, which waits for no UI frame.
 fn on_init(id: String, re: Option<&str>, p: &JsValue) {
     let expected = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| !st.initialized && re == Some(st.ready_id.as_str())));
     if !expected {
@@ -474,8 +475,8 @@ fn on_init(id: String, re: Option<&str>, p: &JsValue) {
         "appearance.highlightColor": init.accent,
     });
     let ns = init.storage_ns;
+    crate::post(move |w, _| apply_prefs(w, &values));
     wasm_bindgen_futures::spawn_local(async move {
-        set_prefs(values).await;
         let mut ok = true;
         if purge && let Err(e) = opfs::purge(opfs::Purge::Others(ns.clone())).await {
             log::warn!("Evora storage purge at start-up: {e:?}");
@@ -494,12 +495,13 @@ fn on_init(id: String, re: Option<&str>, p: &JsValue) {
 
 /// Apply preferences on the UI thread (they take effect at the next frame, `apply_prefs`).
 async fn set_prefs(values: serde_json::Value) {
-    crate::import::on_ui(move |w, _| {
-        if let Err(e) = w.app.session.execute("prefs.set", json!({ "values": values })) {
-            log::warn!("Evora preferences: {e}");
-        }
-    })
-    .await;
+    crate::import::on_ui(move |w, _| apply_prefs(w, &values)).await;
+}
+
+fn apply_prefs(w: &mut crate::WebApp, values: &serde_json::Value) {
+    if let Err(e) = w.app.session.execute("prefs.set", json!({ "values": values })) {
+        log::warn!("Evora preferences: {e}");
+    }
 }
 
 /// `evora:open`: a project in bytes (opened at `/evora/<docRef>/<name>`) or a new one.
