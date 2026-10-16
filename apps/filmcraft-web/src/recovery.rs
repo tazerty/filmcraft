@@ -7,9 +7,11 @@
 //!   through wasm memory), so the snapshot's `/files/<name>` references resolve after a reload.
 //! - At start-up a dirty snapshot is reopened (`?norecover` skips it, `?fresh` also skips the media).
 //!   A skipped snapshot stays dirty until this session writes its own ([`crate::recovery_policy`]).
-//! - Evora fork (patch E5): inside Evora's shell nothing is read back at start-up, snapshots go to
-//!   the account's namespace once `evora:init` has named it ([`crate::opfs`]), and imported media
-//!   are not copied to the browser's storage.
+//! - Evora fork (patch E5): inside Evora's shell nothing is kept in the browser: no snapshot is
+//!   written (the project goes to Evora with `evora:save`, and the browser's storage is only a
+//!   cache, HOST-PROTOCOL §7.7), nothing is read back at start-up, and imported media are not
+//!   copied. A snapshot there would outlive the save and wait, readable by any script of the
+//!   engine's origin, for the next account's `evora:init` to purge it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -38,9 +40,9 @@ pub struct Autosave {
 }
 
 impl Autosave {
-    /// Called every frame.
+    /// Called every frame. Evora fork (patch E5): never inside Evora's shell.
     pub fn tick(&mut self, s: &Session, ctx: &egui::Context) {
-        if !opfs::available() {
+        if !opfs::available() || opfs::hosted() {
             return;
         }
         let now = ctx.input(|i| i.time);

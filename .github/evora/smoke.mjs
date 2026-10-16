@@ -91,7 +91,8 @@ const TEMOIN_JS = `(() => {
   let n = 0;
   const ulid = () => { n += 1; let t = Date.now(), s = ""; for (let i = 0; i < 10; i++) { s = A[t % 32] + s; t = Math.floor(t / 32); } let c = n, r = ""; for (let i = 0; i < 6; i++) { r = A[c % 32] + r; c = Math.floor(c / 32); } for (let i = 0; i < 10; i++) r += A[Math.floor(Math.random() * 32)]; return s + r; };
   const prefs = { "general.interfaceLanguage": "en", "appearance.appearanceMode": "dark", "appearance.highlightColor": "#4f46e5" };
-  let docRef = null, name = "", path = null, dirty = false;
+  let docRef = null, name = "", path = null, dirty = false, ns = null;
+  const write = async (rel) => { try { const parts = rel.split("/"); let d = await navigator.storage.getDirectory(); for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s, { create: true }); const f = await d.getFileHandle(parts.at(-1), { create: true }); const w = await f.createWritable(); await w.write("temoin"); await w.close(); } catch (e) {} };
   const post = (type, payload, re) => { const m = { v: 1, type, id: ulid(), payload }; if (re) m.re = re; parent.postMessage(m, "*"); return m.id; };
   const save = (re) => { dirty = false; const bytes = new TextEncoder().encode('{"format":"filmcraft.project"}').buffer; post("evora:save", { docRef, name: name + ".fcproj", saveAs: false, bytes }, re); post("evora:dirty", { dirty: false, docRef }); };
   window.filmcraftLoad = { readyMs: 1 };
@@ -99,7 +100,8 @@ const TEMOIN_JS = `(() => {
     execute: async (cmd, p = {}) => {
       if (cmd === "prefs.get") return prefs[p.key];
       if (cmd === "project.inspect") return { name, path, dirty };
-      if (cmd === "file.newSequence") { dirty = true; post("evora:dirty", { dirty: true, docRef }); return {}; }
+      if (cmd === "file.newSequence") { dirty = true; post("evora:dirty", { dirty: true, docRef }); if (ns) await write("evora-corte/" + ns + "/recovery/snapshot.fcproj"); return {}; }
+      if (cmd === "file.saveCopy") { const to = String(p.path || ""); await write(to.startsWith("/opfs/") ? to.slice(6) : to); return {}; }
       if (cmd === "file.save") { save(); return {}; }
       return {};
     },
@@ -109,7 +111,7 @@ const TEMOIN_JS = `(() => {
   addEventListener("message", (e) => {
     const d = e.data, p = (d && d.payload) || {};
     if (!d || typeof d !== "object") return;
-    if (d.type === "evora:init") { prefs["general.interfaceLanguage"] = p.engineLang || "en"; prefs["appearance.appearanceMode"] = p.theme; post("evora:ack", { ok: true }, d.id); }
+    if (d.type === "evora:init") { ns = p.storageNs; prefs["general.interfaceLanguage"] = p.engineLang || "en"; prefs["appearance.appearanceMode"] = p.theme; post("evora:ack", { ok: true }, d.id); }
     else if (d.type === "evora:open") { docRef = p.docRef; name = String(p.name || "").replace(/\\.fcproj$/, ""); path = "/evora/" + docRef + "/" + p.name; dirty = false; post("evora:ack", { ok: true }, d.id); post("evora:dirty", { dirty: false, docRef }); }
     else if (d.type === "evora:request-save") { if (dirty) save(d.id); else post("evora:ack", { ok: true, code: "clean" }, d.id); }
     else if (d.type === "evora:lang") { prefs["general.interfaceLanguage"] = p.engineLang || "en"; post("evora:ack", { ok: true }, d.id); }
@@ -828,20 +830,31 @@ try {
       if (openAck?.payload?.ok !== true || !cleanAfterOpen || r.open.project?.path !== `/evora/${R2}/evora-smoke.fcproj` || r.open.project?.name !== "evora-smoke") {
         flag("OPEN", `projet en octets : ${JSON.stringify(r.open)}`);
       }
-      // 7. une modification : evora:dirty, puis l'instantané de récupération sous l'espace du compte
+      // 7. une modification : evora:dirty ; en mode hôte, rien n'est gardé dans le navigateur (E5,
+      //    HOST-PROTOCOL §7.7 : le stockage n'est qu'un cache) : aucun instantané de récupération,
+      //    même passé l'intervalle de l'instantané amont (5 s)
       await exec("file.newSequence", { name: "E4-a" });
       const dirtyMsg = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:dirty" && m.payload?.docRef === R2 && m.payload?.dirty === true), 10000);
       if (!dirtyMsg) flag("DIRTY", "aucun evora:dirty {dirty: true} après une modification");
-      let afterEdit = [];
-      for (let i = 0; i < 30; i++) {
-        afterEdit = await list();
-        if (Array.isArray(afterEdit) && afterEdit.includes(`evora-corte/${NS}/recovery/snapshot.fcproj`)) break;
+      await sleep(7000);
+      const afterEdit = await list();
+      const added = Array.isArray(afterEdit) && Array.isArray(afterInit) ? afterEdit.filter((p) => !afterInit.includes(p)) : null;
+      r.afterEdit = { list: afterEdit, added };
+      if (!added || added.length !== 0 || afterEdit.some((p) => /(^|\/)recovery\/(snapshot\.fcproj|meta\.json)$/.test(p))) {
+        flag("NS-ECRITURE", `écriture dans le navigateur après une modification en mode hôte : ${JSON.stringify(r.afterEdit)}`);
+      }
+      // storage.ns : ce que le moteur écrit encore dans OPFS (une copie sous /opfs/) va sous l'espace
+      // du compte, jamais à la racine
+      const probe = await exec("file.saveCopy", { path: "/opfs/evora-lab/sonde.fcproj" });
+      const PROBE = `evora-corte/${NS}/evora-lab/sonde.fcproj`;
+      let afterProbe = [];
+      for (let i = 0; i < 20; i++) {
+        afterProbe = await list();
+        if (Array.isArray(afterProbe) && afterProbe.includes(PROBE)) break;
         await sleep(500);
       }
-      r.afterEdit = afterEdit;
-      if (!Array.isArray(afterEdit) || !afterEdit.includes(`evora-corte/${NS}/recovery/snapshot.fcproj`) || afterEdit.some((p) => p === "recovery/" || p === "media/")) {
-        flag("NS-ECRITURE", `récupération hors de l'espace du compte : ${JSON.stringify(afterEdit)}`);
-      }
+      r.nsProbe = { result: probe, list: afterProbe };
+      if (!Array.isArray(afterProbe) || !afterProbe.includes(PROBE) || afterProbe.some((p) => p.startsWith("evora-lab/"))) flag("NS", `copie hors de l'espace du compte : ${JSON.stringify(r.nsProbe)}`);
       // 8. intrusions : autre fenêtre de même origine (jumeau), autre origine (intrus), enveloppes fautives
       const j1 = await msg("evora:request-save", { reason: "user" });
       const j2 = await msg("evora:purge", { scope: "all" });
@@ -867,7 +880,7 @@ try {
       if (r.intrusions.v2) flag("V2", "réponse à un message de version 2");
       if (Object.values(r.intrusions.schema).some(Boolean)) flag("SCHEMA", `réponse à un message hors schéma : ${JSON.stringify(r.intrusions.schema)}`);
       const afterIntrusions = await list();
-      if (!Array.isArray(afterIntrusions) || !afterIntrusions.includes(`evora-corte/${NS}/recovery/snapshot.fcproj`)) flag("ORIGINE", `stockage effacé par une intrusion : ${JSON.stringify(afterIntrusions)}`);
+      if (!Array.isArray(afterIntrusions) || !afterIntrusions.includes(PROBE)) flag("ORIGINE", `stockage effacé par une intrusion : ${JSON.stringify(afterIntrusions)}`);
       // 9. evora:request-save avec des modifications : evora:save conforme (re), puis evora:saved
       const rs = await send(await msg("evora:request-save", { reason: "autosave" }));
       const save = await waitFor(answer(rs), 20000);
@@ -907,13 +920,15 @@ try {
       const pg = await send(await msg("evora:purge", { scope: "current" }));
       const pgAck = await waitFor(answer(pg, "evora:ack"), 20000);
       const atAck = await list();
+      // après l'accusé, une écriture du moteur (copie sous /opfs/) n'atteint plus le stockage
+      const afterPurgeWrite = await exec("file.saveCopy", { path: "/opfs/evora-lab/apres-purge.fcproj" });
       for (let i = 0; i < 4; i++) {
         await exec("file.newSequence", { name: `E4-apres-${i}` });
         await sleep(2000);
       }
       const later = await list();
       const web = await inChild("(async () => ({ localStorage: Object.keys(localStorage), indexedDB: indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : 'n/a' }))()").catch((e) => String(e));
-      r.purge = { ack: pgAck?.payload ?? null, atAck, later, web, storage: (await inChild("filmcraft.info()").catch(() => null))?.storage ?? null };
+      r.purge = { ack: pgAck?.payload ?? null, atAck, afterPurgeWrite, later, web, storage: (await inChild("filmcraft.info()").catch(() => null))?.storage ?? null };
       const engineLeft = (all) => !Array.isArray(all) || all.some((p) => (p.startsWith("evora-corte/") && p !== "evora-corte/") || ["recovery/", "media/", "evora-lab/"].includes(p));
       if (pgAck?.payload?.ok !== true) flag("PURGE", `accusé d'evora:purge absent ou négatif : ${JSON.stringify(pgAck)}`);
       if (engineLeft(atAck)) flag("PURGE", `stockage du moteur encore présent à l'accusé : ${JSON.stringify(atAck)}`);
@@ -951,7 +966,7 @@ try {
     // Témoin sabordé : le même banc contre un faux moteur fautif doit relever chacune de ses fautes.
     const witness = await pontEhp("/__temoin/index.html");
     const tags = [...new Set(witness.bad.map((b) => b.tag))].sort();
-    const mustFlag = ["ORIGINE", "PURGE", "READY", "SCHEMA", "SOURCE", "V2"];
+    const mustFlag = ["NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "SCHEMA", "SOURCE", "V2"];
     report.ehp.witness = { tags, failures: witness.bad.length, run: witness.r.intrusions ?? null };
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
