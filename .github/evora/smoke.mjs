@@ -869,6 +869,8 @@ try {
         capabilities: rp.capabilities ?? [], prefs: {}, limits: { maxDocumentBytes: LIMIT, maxExportBytes: LIMIT } };
       const n0 = await send(await msg("evora:init", { ...initPayload, storageNs: "abc" }, { re: ready.id }));
       const n1 = await send({ ...(await msg("evora:init", initPayload, { re: ready.id })), v: 2 });
+      // (un moteur fautif qui a traité ces deux messages a fini de le faire avant la mise en place)
+      await sleep(1500);
       // le bon evora:init arrive pendant qu'un second onglet du même moteur tient le verrou OPFS et un
       // flux d'écriture ouvert dans l'espace d'un autre compte : la purge de démarrage attend le
       // verrou, puis efface ; l'accusé suit la libération (E5, purge sans course entre onglets)
@@ -1082,10 +1084,11 @@ try {
       let beforeRemoval = [];
       for (let i = 0; i < 20; i++) {
         beforeRemoval = await list();
-        if (Array.isArray(beforeRemoval) && beforeRemoval.includes(SONDE)) break;
+        if (Array.isArray(beforeRemoval) && beforeRemoval.includes(SONDE) && !beforeRemoval.some((p) => p.endsWith(".crswap"))) break;
         await sleep(500);
       }
-      const removed = await inChild(`(async () => { const e = await (await navigator.storage.getDirectory()).getDirectoryHandle("evora-corte"); await e.removeEntry(${JSON.stringify(NS)}, { recursive: true }); return true; })()`).catch((e) => String(e));
+      // l'« autre onglet » purge comme le moteur : sous son verrou (il attend la fin d'une écriture)
+      const removed = await inChild(`navigator.locks.request("evora-corte-opfs", { mode: "exclusive" }, async () => { const e = await (await navigator.storage.getDirectory()).getDirectoryHandle("evora-corte"); await e.removeEntry(${JSON.stringify(NS)}, { recursive: true }); return true; })`).catch((e) => String(e));
       const removalWrite = await exec("file.saveCopy", { path: "/opfs/evora-lab/sonde-2.fcproj" });
       await sleep(2000);
       const afterRemoval = await list();
