@@ -7,14 +7,22 @@
 //! `evora-corte/<storageNs>/`, the namespace the shell gives in `evora:init` (module `ehp`): never
 //! from the URL. Until then, and for good once a purge has started, OPFS is closed: nothing is read,
 //! written or created. A purge first closes OPFS (queued writes are dropped, writes under way end),
-//! then removes what it targets, then checks it is gone. It is a namespace, not a partition: any
-//! script of this origin can still list the whole OPFS, and isolation between accounts comes from
-//! serving the engine on its own origin. Without `?host=evora`, paths live at the OPFS root, as
-//! upstream.
+//! then removes what it targets, then checks it is gone.
+//!
+//! Across tabs: every write and every purge holds one lock of the origin ([`LOCK`], Web Locks API),
+//! so a purge in one tab waits for a write under way in another (an open writable makes the removal
+//! fail) and no write starts during a purge. The namespace directory is created once, by
+//! `evora:init`; a write never creates it again: one that finds it gone (purged from another tab,
+//! after an account change) fails and closes OPFS for good.
+//!
+//! It is a namespace, not a partition: any script of this origin can still list the whole OPFS, and
+//! isolation between accounts comes from serving the engine on its own origin. Without
+//! `?host=evora`, paths live at the OPFS root, as upstream (only the lock is added).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle};
@@ -54,6 +62,9 @@ pub const ENGINE_DIR: &str = "evora-corte";
 pub const LEFTOVERS: [&str; 3] = ["recovery", "media", "evora-lab"];
 /// Milliseconds between two looks at the writes a purge waits for.
 const DRAIN_POLL_MS: i32 = 5;
+/// Evora fork (patch E5): the lock (Web Locks API) every OPFS write and purge of this engine holds,
+/// in every tab of the origin.
+pub const LOCK: &str = "evora-corte-opfs";
 
 /// Marks an OPFS operation as under way while it lives (a purge waits for none to be left).
 struct Busy;
@@ -90,10 +101,21 @@ pub fn valid_namespace(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Evora fork (patch E5): open OPFS under `ENGINE_DIR/<ns>/` (`evora:init`). Refused outside Evora's
-/// shell, for an invalid namespace, and once a purge has started.
-pub fn open_namespace(ns: &str) -> bool {
+/// Evora fork (patch E5): open OPFS under `ENGINE_DIR/<ns>/` (`evora:init`), creating that directory
+/// now, under [`LOCK`]: no write creates it again. Refused outside Evora's shell, for an invalid
+/// namespace, once a purge has started, and when the directory can't be created.
+pub async fn open_namespace(ns: &str) -> bool {
     if SEALED.get() || !hosted() || !valid_namespace(ns) {
+        return false;
+    }
+    if browser_has_opfs() {
+        let _lock = origin_lock().await;
+        if let Err(e) = namespace_dir(ns, true).await {
+            log::warn!("OPFS namespace: {e:?}");
+            return false;
+        }
+    }
+    if SEALED.get() {
         return false;
     }
     SCOPE.with(|s| *s.borrow_mut() = Scope::Namespace(ns.to_string()));
@@ -106,6 +128,8 @@ pub fn open_namespace(ns: &str) -> bool {
 pub fn seal() {
     SEALED.set(true);
     SCOPE.with(|s| *s.borrow_mut() = Scope::Closed);
+    crate::set_info("storage", serde_json::json!(describe()));
+    crate::set_info("opfs", serde_json::json!(false));
     let dropped = QUEUE.with(|q| std::mem::take(&mut q.borrow_mut().0));
     for (_, (_, done)) in dropped {
         for d in done {
@@ -151,16 +175,30 @@ async fn subdir(dir: &FileSystemDirectoryHandle, name: &str, create: bool) -> Re
     JsFuture::from(dir.get_directory_handle_with_options(name, &o)).await?.dyn_into()
 }
 
-/// The root every path is relative to: the OPFS root (upstream) or the namespace directory.
+/// Evora fork (patch E5): `ENGINE_DIR/<ns>/`, created when `create` (only [`open_namespace`] does).
+async fn namespace_dir(ns: &str, create: bool) -> Result<FileSystemDirectoryHandle, JsValue> {
+    let engine = subdir(&origin_root().await?, ENGINE_DIR, create).await?;
+    subdir(&engine, ns, create).await
+}
+
+/// The root every path is relative to: the OPFS root (upstream) or the namespace directory. Evora
+/// fork (patch E5): a namespace directory that is gone was purged (another tab, another account): it
+/// is not recreated, and OPFS closes for good.
 async fn root() -> Result<FileSystemDirectoryHandle, JsValue> {
     let scope = SCOPE.with(|s| s.borrow().clone());
     match scope {
         Scope::Closed => Err("OPFS is closed (no storage namespace from Evora)".into()),
         Scope::Root => origin_root().await,
-        Scope::Namespace(ns) => {
-            let engine = subdir(&origin_root().await?, ENGINE_DIR, true).await?;
-            subdir(&engine, &ns, true).await
-        }
+        Scope::Namespace(ns) => match namespace_dir(&ns, false).await {
+            Ok(dir) => Ok(dir),
+            Err(e) => {
+                if matches!(error_name(&e).as_deref(), Some("NotFoundError" | "TypeMismatchError")) {
+                    log::warn!("OPFS namespace gone (purged elsewhere): closed for good");
+                    seal();
+                }
+                Err(e)
+            }
+        },
     }
 }
 
@@ -217,6 +255,8 @@ pub fn write_then(rel: String, data: Vec<u8>, done: Option<Done>) {
         return;
     }
     wasm_bindgen_futures::spawn_local(async {
+        // Evora fork (patch E5): one lock for the whole run of queued writes
+        let _lock = origin_lock().await;
         loop {
             let next = QUEUE.with(|q| {
                 let mut q = q.borrow_mut();
@@ -260,6 +300,7 @@ pub async fn remove(rel: &str) {
 
 /// Copy a Blob into OPFS (streamed by the browser, never through wasm memory).
 pub async fn store_blob(rel: &str, blob: &web_sys::Blob) -> Result<(), JsValue> {
+    let _lock = origin_lock().await;
     let _busy = Busy::enter();
     let fh = file_handle(rel, true).await?;
     let w: web_sys::FileSystemWritableFileStream = JsFuture::from(fh.create_writable()).await?.dyn_into()?;
@@ -311,44 +352,53 @@ pub enum Purge {
     All,
 }
 
-/// Evora fork (patch E5): purge, then check that what was to go is gone. One purge at a time; it
-/// starts once no OPFS operation is under way (call [`seal`] first for `Current` and `All`: then
-/// none can start). Without OPFS in the browser there is nothing to purge.
+/// Evora fork (patch E5): purge, then check that what was to go is gone. One purge at a time in this
+/// tab; it starts once no OPFS operation of this tab is under way (call [`seal`] first for `Current`
+/// and `All`: then none can start), and holds [`LOCK`], so it also waits for a write under way in
+/// another tab of the origin. Without OPFS in the browser there is nothing to purge.
 pub async fn purge(what: Purge) -> Result<(), JsValue> {
     while PURGING.get() || ACTIVE.get() > 0 {
         crate::fs::sleep(DRAIN_POLL_MS).await;
     }
     PURGING.set(true);
+    let lock = origin_lock().await;
     let r = purge_now(&what).await;
+    drop(lock);
     PURGING.set(false);
     r
 }
 
+/// The namespaces first (the account's data), then upstream's leftovers: an entry that can't be
+/// removed does not stop the others, and the final check says whether the purge is complete.
 async fn purge_now(what: &Purge) -> Result<(), JsValue> {
     if !browser_has_opfs() {
         return Ok(());
     }
     let base = origin_root().await?;
-    for name in LEFTOVERS {
-        remove_tree(&base, name).await?;
-    }
+    let mut failure: Option<JsValue> = None;
     match what {
-        Purge::All => remove_tree(&base, ENGINE_DIR).await?,
+        Purge::All => keep_first(&mut failure, remove_tree(&base, ENGINE_DIR).await),
         Purge::Current(None) => {}
-        Purge::Current(Some(ns)) => {
-            if let Some(engine) = existing_subdir(&base, ENGINE_DIR).await? {
-                remove_tree(&engine, ns).await?;
-            }
-        }
-        Purge::Others(keep) => {
-            if let Some(engine) = existing_subdir(&base, ENGINE_DIR).await? {
-                for name in names(&engine).await? {
-                    if &name != keep {
-                        remove_tree(&engine, &name).await?;
+        Purge::Current(Some(ns)) => match existing_subdir(&base, ENGINE_DIR).await {
+            Ok(Some(engine)) => keep_first(&mut failure, remove_tree(&engine, ns).await),
+            Ok(None) => {}
+            Err(e) => keep_first(&mut failure, Err(e)),
+        },
+        Purge::Others(keep) => match existing_subdir(&base, ENGINE_DIR).await {
+            Ok(Some(engine)) => match names(&engine).await {
+                Ok(all) => {
+                    for name in all.iter().filter(|n| n.as_str() != keep.as_str()) {
+                        keep_first(&mut failure, remove_tree(&engine, name).await);
                     }
                 }
-            }
-        }
+                Err(e) => keep_first(&mut failure, Err(e)),
+            },
+            Ok(None) => {}
+            Err(e) => keep_first(&mut failure, Err(e)),
+        },
+    }
+    for name in LEFTOVERS {
+        keep_first(&mut failure, remove_tree(&base, name).await);
     }
     // effective: nothing that was to go is left
     let at_root = names(&base).await?;
@@ -361,8 +411,70 @@ async fn purge_now(what: &Purge) -> Result<(), JsValue> {
     if left_root.is_empty() && left_ns.is_empty() {
         Ok(())
     } else {
-        Err(format!("purge incomplete: {left_root:?} {left_ns:?}").into())
+        Err(format!("purge incomplete: {left_root:?} {left_ns:?} (first error: {failure:?})").into())
     }
+}
+
+/// Log a failed purge step, keep its error if it is the first, and go on.
+fn keep_first(failure: &mut Option<JsValue>, r: Result<(), JsValue>) {
+    if let Err(e) = r {
+        log::warn!("Evora storage purge: {e:?}");
+        if failure.is_none() {
+            *failure = Some(e);
+        }
+    }
+}
+
+/// Evora fork (patch E5): [`LOCK`], held until dropped. Without the Web Locks API (or when the
+/// browser refuses the request), nothing is held.
+struct OriginLock(Option<js_sys::Function>);
+
+impl Drop for OriginLock {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release.call0(&JsValue::NULL);
+        }
+    }
+}
+
+/// Wait for [`LOCK`]: `navigator.locks.request(LOCK, {mode: "exclusive"}, callback)`; the lock is
+/// held until the promise the callback returns settles, which dropping the [`OriginLock`] does.
+async fn origin_lock() -> OriginLock {
+    let locks = web_sys::window().map(|w| js_sys::Reflect::get(&w.navigator(), &"locks".into()).unwrap_or(JsValue::UNDEFINED)).unwrap_or(JsValue::UNDEFINED);
+    if !locks.is_object() {
+        return OriginLock(None);
+    }
+    let Some(request) = js_sys::Reflect::get(&locks, &"request".into()).ok().and_then(|r| r.dyn_into::<js_sys::Function>().ok()) else {
+        return OriginLock(None);
+    };
+    let mut release: Option<js_sys::Function> = None;
+    let held = js_sys::Promise::new(&mut |resolve, _| release = Some(resolve));
+    let mut grant: Option<js_sys::Function> = None;
+    let granted = js_sys::Promise::new(&mut |resolve, _| grant = Some(resolve));
+    let (Some(release), Some(grant)) = (release, grant) else { return OriginLock(None) };
+    let on_grant = {
+        let grant = grant.clone();
+        Closure::once_into_js(move |_lock: JsValue| -> JsValue {
+            let _ = grant.call0(&JsValue::NULL);
+            JsValue::from(held)
+        })
+    };
+    let options = js_sys::Object::new();
+    if js_sys::Reflect::set(&options, &JsValue::from_str("mode"), &JsValue::from_str("exclusive")).is_err() {
+        return OriginLock(None);
+    }
+    let Ok(pending) = request.call3(&locks, &JsValue::from_str(LOCK), &JsValue::from(options), &on_grant) else {
+        return OriginLock(None);
+    };
+    // a refused request goes on without the lock rather than waiting for ever
+    let on_refusal = Closure::once_into_js(move |_error: JsValue| {
+        let _ = grant.call0(&JsValue::NULL);
+    });
+    if let Some(catch) = js_sys::Reflect::get(&pending, &"catch".into()).ok().and_then(|c| c.dyn_into::<js_sys::Function>().ok()) {
+        let _ = catch.call1(&pending, &on_refusal);
+    }
+    let _ = JsFuture::from(granted).await;
+    OriginLock(Some(release))
 }
 
 /// The error's `name` (`NotFoundError`, `NoModificationAllowedError`…).

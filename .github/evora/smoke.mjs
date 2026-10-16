@@ -101,7 +101,7 @@ const TEMOIN_JS = `(() => {
       if (cmd === "prefs.get") return prefs[p.key];
       if (cmd === "project.inspect") return { name, path, dirty };
       if (cmd === "file.newSequence") { dirty = true; post("evora:dirty", { dirty: true, docRef }); if (ns) await write("evora-corte/" + ns + "/recovery/snapshot.fcproj"); return {}; }
-      if (cmd === "file.saveCopy") { const to = String(p.path || ""); await write(to.startsWith("/opfs/") ? to.slice(6) : to); return {}; }
+      if (cmd === "file.saveCopy") { const to = String(p.path || ""); const rel = to.startsWith("/opfs/") ? to.slice(6) : to; await write(rel); if (ns) await write("evora-corte/" + ns + "/" + rel); return {}; }
       if (cmd === "file.save") { save(); return {}; }
       return {};
     },
@@ -111,7 +111,15 @@ const TEMOIN_JS = `(() => {
   addEventListener("message", (e) => {
     const d = e.data, p = (d && d.payload) || {};
     if (!d || typeof d !== "object") return;
-    if (d.type === "evora:init") { ns = p.storageNs; prefs["general.interfaceLanguage"] = p.engineLang || "en"; prefs["appearance.appearanceMode"] = p.theme; post("evora:ack", { ok: true }, d.id); }
+    if (d.type === "evora:init") {
+      ns = p.storageNs; prefs["general.interfaceLanguage"] = p.engineLang || "en"; prefs["appearance.appearanceMode"] = p.theme;
+      (async () => {
+        let ok = true;
+        try { const e = await (await navigator.storage.getDirectory()).getDirectoryHandle("evora-corte"); for await (const [n] of e.entries()) if (n !== ns) await e.removeEntry(n, { recursive: true }); }
+        catch (err) { if (err.name !== "NotFoundError") ok = false; }
+        post("evora:ack", ok ? { ok: true } : { ok: false, code: "busy" }, d.id);
+      })();
+    }
     else if (d.type === "evora:open") { docRef = p.docRef; name = String(p.name || "").replace(/\\.fcproj$/, ""); path = "/evora/" + docRef + "/" + p.name; dirty = false; post("evora:ack", { ok: true }, d.id); post("evora:dirty", { dirty: false, docRef }); }
     else if (d.type === "evora:request-save") { if (dirty) save(d.id); else post("evora:ack", { ok: true, code: "clean" }, d.id); }
     else if (d.type === "evora:lang") { prefs["general.interfaceLanguage"] = p.engineLang || "en"; post("evora:ack", { ok: true }, d.id); }
@@ -121,6 +129,36 @@ const TEMOIN_JS = `(() => {
   const ready = { app: "corte", version: "0.0.0", ehp: "1.0", capabilities: ["doc.open", "doc.save", "doc.dirty", "doc.request-save", "storage.ns", "storage.purge", "live.lang", "live.theme"] };
   post("evora:ready", ready);
   post("evora:ready", ready);
+})();
+`;
+
+// E5 : « second onglet » du même moteur (même origine que lui, servi par le banc sous /__verrou/) :
+// sur demande de la page parente, il prend le verrou OPFS du moteur (Web Locks, « evora-corte-opfs »),
+// ouvre un flux d'écriture sur le chemin donné, le garde ouvert le temps demandé, le ferme et rend le
+// verrou. Un flux ouvert fait échouer l'effacement du dossier (NoModificationAllowedError) : une purge
+// qui n'attend pas le verrou échoue ou passe avant la libération.
+const VERROU_HTML = `<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>verrou</title></head>
+<body><script src="verrou.js"></script></body></html>`;
+const VERROU_JS = `(() => {
+  addEventListener("message", (e) => {
+    const d = e.data;
+    if (e.source !== parent || !d || d.op !== "hold") return;
+    const say = (verrou) => parent.postMessage({ verrou, t: Date.now() }, e.origin);
+    if (!navigator.locks) { say("absent"); return; }
+    navigator.locks.request("evora-corte-opfs", { mode: "exclusive" }, async () => {
+      try {
+        const parts = String(d.path).split("/");
+        let dir = await navigator.storage.getDirectory();
+        for (const s of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(s, { create: true });
+        const w = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable();
+        await w.write("verrou");
+        say("held");
+        await new Promise((res) => setTimeout(res, d.ms));
+        await w.close();
+        say("released");
+      } catch (err) { say("erreur " + err.name); }
+    });
+  });
 })();
 `;
 
@@ -148,7 +186,7 @@ const HARNESS_JS = `(() => {
     const d = e.data;
     const plain = d !== null && typeof d === "object" && Object.getPrototypeOf(d) === Object.prototype;
     const payloadPlain = plain && d.payload !== null && typeof d.payload === "object" && Object.getPrototypeOf(d.payload) === Object.prototype;
-    log.push({ fromEngine: e.source === frame.contentWindow && e.origin === engineOrigin(), origin: e.origin, plain,
+    log.push({ t: Date.now(), fromEngine: e.source === frame.contentWindow && e.origin === engineOrigin(), origin: e.origin, plain,
       keys: plain ? Object.keys(d) : null, v: plain ? d.v : null, vType: plain ? typeof d.v : null, type: plain ? d.type : null,
       id: plain ? d.id : null, re: plain && "re" in d ? d.re : null, hasRe: plain && "re" in d, payloadPlain,
       payloadKeys: payloadPlain ? Object.keys(d.payload) : null, payload: plain ? describe(d.payload) : describe(d),
@@ -167,6 +205,7 @@ const HARNESS_JS = `(() => {
       return m.id;
     },
     relay: (which, msgs) => { const f = document.getElementById(which); f.contentWindow.postMessage({ relay: msgs }, new URL(f.src, location.href).origin); return msgs.length; },
+    verrou: (path, ms) => { document.getElementById("verrou").contentWindow.postMessage({ op: "hold", path, ms }, engineOrigin()); return true; },
   };
 })();
 `;
@@ -207,6 +246,8 @@ const engine = createServer((req, res) => {
   const memory = {
     "/__temoin/index.html": [TEMOIN_HTML, ".html"],
     "/__temoin/temoin.js": [TEMOIN_JS, ".js"],
+    "/__verrou/index.html": [VERROU_HTML, ".html"],
+    "/__verrou/verrou.js": [VERROU_JS, ".js"],
     ...(hostConfig ? { "/evora-host.json": [JSON.stringify(hostConfig), ".json"] } : {}),
   }[url.pathname];
   const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
@@ -263,6 +304,7 @@ const parent = createServer((req, res) => {
  style="border:0;display:block;width:1280px;height:800px"></iframe>
 <iframe id="jumeau" src="/jumeau.html${q}" title="jumeau" style="border:0;width:1px;height:1px"></iframe>
 <iframe id="intrus" src="${intruderOrigin}/intrus.html${q}" title="intrus" style="border:0;width:1px;height:1px"></iframe>
+<iframe id="verrou" src="${engineOrigin}/__verrou/index.html" title="verrou" style="border:0;width:8px;height:8px"></iframe>
 <script src="/ehp-harness.js"></script></body></html>`);
 });
 
@@ -721,6 +763,8 @@ try {
       `(async () => { const r = await navigator.storage.getDirectory(); for (const p of ${JSON.stringify(paths)}) { const parts = p.split('/'); let d = r; for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s, { create: true }); const f = await d.getFileHandle(parts.at(-1), { create: true }); const w = await f.createWritable(); await w.write('graine'); await w.close(); } return true; })()`;
     const list = () => inChild(LIST_ALL).catch((e) => String(e));
     const exec = (cmd, params = {}) => inChild(`filmcraft.execute(${JSON.stringify(cmd)}, ${JSON.stringify(params)}).then((r) => r === undefined ? null : r, (e) => "erreur : " + e)`).catch((e) => "erreur : " + e);
+    // durée pendant laquelle le « second onglet » garde le verrou et son flux ouvert
+    const HOLD_MS = 4000;
     const seeds = ["recovery/graine.bin", "media/graine.bin", "evora-lab/graine.bin", `evora-corte/${OTHER}/recovery/meta.json`, `evora-corte/${NS}/recovery/ancien.bin`, "autre-moteur/garder.txt"];
     report.ehp = {};
 
@@ -787,10 +831,19 @@ try {
         capabilities: rp.capabilities ?? [], prefs: {}, limits: { maxDocumentBytes: LIMIT, maxExportBytes: LIMIT } };
       const n0 = await send(await msg("evora:init", { ...initPayload, storageNs: "abc" }, { re: ready.id }));
       const n1 = await send({ ...(await msg("evora:init", initPayload, { re: ready.id })), v: 2 });
+      // le bon evora:init arrive pendant qu'un second onglet du même moteur tient le verrou OPFS et un
+      // flux d'écriture ouvert dans l'espace d'un autre compte : la purge de démarrage attend le
+      // verrou, puis efface ; l'accusé suit la libération (E5, purge sans course entre onglets)
+      await inParent(`window.__ehp.verrou(${JSON.stringify(`evora-corte/${OTHER}/recovery/verrou.bin`)}, ${HOLD_MS})`);
+      const held = await waitFor((log) => log.find((m) => m.data && typeof m.data.verrou === "string" && m.data.verrou !== "released"), 10000);
       const init = await send(await msg("evora:init", initPayload, { re: ready.id }));
       const initAck = await waitFor(answer(init, "evora:ack"), 30000);
+      const released = await waitFor((log) => log.find((m) => m.data && m.data.verrou === "released"), HOLD_MS + 10000);
       r.initAck = initAck?.payload ?? null;
+      r.verrou = { held: held?.data?.verrou ?? null, heldAt: held?.t ?? null, releasedAt: released?.t ?? null, ackAt: initAck?.t ?? null };
       if (initAck?.payload?.ok !== true) flag("INIT", `accusé d'evora:init absent ou négatif : ${JSON.stringify(initAck)}`);
+      if (r.verrou.held !== "held") flag("PREMISSE", `le second onglet n'a pas pris le verrou : ${JSON.stringify(r.verrou)}`);
+      else if (initAck?.payload?.ok !== true || !released || initAck.t < released.t) flag("VERROU", `purge de démarrage pendant l'écriture d'un autre onglet : ${JSON.stringify(r.verrou)}, accusé ${JSON.stringify(r.initAck)}`);
       // 3. purge au démarrage (§7.7 b) : autres comptes et restes amont effacés, compte courant et autre moteur gardés
       const afterInit = await list();
       r.afterInit = afterInit;
@@ -956,6 +1009,36 @@ try {
       const failed = all.filter((m) => m.type === "evora:failed");
       if (failed.length) flag("DEMARRAGE", `evora:failed reçu : ${JSON.stringify(failed)}`);
       r.messages = all.map((m) => m.type + (m.hasRe ? ` (re ${String(m.re).slice(-4)})` : ""));
+      // 13. second chargement : l'espace du compte effacé par un autre onglet (changement de compte)
+      //     n'est jamais recréé par une écriture ; le moteur ferme alors OPFS pour de bon (E5)
+      await inParent("window.__ehp.clear()");
+      const second = await reload("host=evora&lang=en&theme=dark&second", path);
+      const ready2 = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:ready"), 20000);
+      if (!second?.readyMs || !ready2) {
+        flag("DEMARRAGE", `second chargement : ${JSON.stringify(second)}`);
+        return { bad, r };
+      }
+      const init2 = await send(await msg("evora:init", initPayload, { re: ready2.id }));
+      const init2Ack = await waitFor(answer(init2, "evora:ack"), 30000);
+      if (init2Ack?.payload?.ok !== true) flag("INIT", `second chargement, accusé d'evora:init : ${JSON.stringify(init2Ack)}`);
+      const SONDE = `evora-corte/${NS}/evora-lab/sonde-1.fcproj`;
+      await exec("file.saveCopy", { path: "/opfs/evora-lab/sonde-1.fcproj" });
+      let beforeRemoval = [];
+      for (let i = 0; i < 20; i++) {
+        beforeRemoval = await list();
+        if (Array.isArray(beforeRemoval) && beforeRemoval.includes(SONDE)) break;
+        await sleep(500);
+      }
+      const removed = await inChild(`(async () => { const e = await (await navigator.storage.getDirectory()).getDirectoryHandle("evora-corte"); await e.removeEntry(${JSON.stringify(NS)}, { recursive: true }); return true; })()`).catch((e) => String(e));
+      const removalWrite = await exec("file.saveCopy", { path: "/opfs/evora-lab/sonde-2.fcproj" });
+      await sleep(2000);
+      const afterRemoval = await list();
+      const storage2 = (await inChild("filmcraft.info()").catch(() => null))?.storage ?? null;
+      r.recreation = { before: beforeRemoval, removed, write: removalWrite, after: afterRemoval, storage: storage2 };
+      if (!Array.isArray(beforeRemoval) || !beforeRemoval.includes(SONDE) || removed !== true) flag("PREMISSE", `espace du compte avant l'effacement : ${JSON.stringify(r.recreation)}`);
+      if (!Array.isArray(afterRemoval) || afterRemoval.some((p) => p.startsWith(`evora-corte/${NS}/`)) || storage2 !== "closed") {
+        flag("RECREATION", `espace recréé après son effacement par un autre onglet : ${JSON.stringify(r.recreation)}`);
+      }
       return { bad, r };
     }
 
@@ -966,7 +1049,7 @@ try {
     // Témoin sabordé : le même banc contre un faux moteur fautif doit relever chacune de ses fautes.
     const witness = await pontEhp("/__temoin/index.html");
     const tags = [...new Set(witness.bad.map((b) => b.tag))].sort();
-    const mustFlag = ["NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "SCHEMA", "SOURCE", "V2"];
+    const mustFlag = ["NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
     report.ehp.witness = { tags, failures: witness.bad.length, run: witness.r.intrusions ?? null };
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
