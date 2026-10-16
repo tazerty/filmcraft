@@ -4,5 +4,5 @@ author:       Evora (fork tazerty/filmcraft), original geometric drawing
 source:       original work: an indigo rounded square with three timeline bars and a playhead, drawn with Pillow (no font, no third-party artwork)
 license:      MIT OR Apache-2.0
 license-file: LICENSE-MIT, LICENSE-APACHE
-added:        2026-10-12 by Claude (agent) for the Evora fork, patch E1
+added:        2026-10-12 by Evora (fork tazerty/filmcraft), patch E1
 notes:        Replaces the FilmCraft owl icon in the web build only (patch E1: the web build carries no ArtCraft or FilmCraft identity). The owl stays in assets/app-icon/ for the desktop packages, unchanged.
