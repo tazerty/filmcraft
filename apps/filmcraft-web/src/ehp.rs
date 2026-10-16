@@ -21,7 +21,9 @@
 //!   Evora opened, and the answer to `evora:request-save`), `evora:saved` (checked; the engine does
 //!   not declare `doc.saved-ack`, so the shell keeps its own save state, §6.3), `evora:dirty`,
 //!   `evora:lang`, `evora:theme`, `evora:purge` (OPFS closed first, then erased, then the answer),
-//!   `evora:ack`, and `evora:failed` when the engine cannot start.
+//!   `evora:ack`, and `evora:failed` when the engine cannot start or stops for good: a panic
+//!   (`{code: "panic"}`, from the panic hook, before the wasm traps) or an abort without one, such as
+//!   running out of memory (`{code: "memory"}`, from `index.html`, to the origin admitted here).
 //!
 //! Not here (not declared): media of a project (`media.need`, `media.ranges`), exports to Drive
 //! (`export.drive`), Drive's picker, host commands, `doc.saved-ack`. Inside Evora, a file the app
@@ -132,6 +134,9 @@ thread_local! {
     static SAVE_RE: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Why the save of the project Evora opened was refused (an `ackCode`).
     static REFUSAL: Cell<Option<&'static str>> = const { Cell::new(None) };
+    /// `evora:failed {code: "panic"}`, built once the bridge listens, with where it goes; the panic
+    /// hook takes it (once).
+    static ON_PANIC: RefCell<Option<(web_sys::Window, String, js_sys::Object)>> = const { RefCell::new(None) };
 }
 
 /// Read `evora-host.json`, find the admitted parent, listen, and announce `evora:ready`. Called once
@@ -149,6 +154,8 @@ pub fn connect() {
         }
         // The listener lives as long as the page.
         on_message.forget();
+        report_panics(&parent, &origin);
+        install_fault_injection();
         let mut st = State {
             parent,
             origin,
@@ -192,6 +199,59 @@ pub fn report_failure(code: &'static str) {
             let _ = parent.post_message(&message, &origin);
         }
     });
+}
+
+/// A panic stops the engine for good: once the hooks have run, the wasm traps. The shell hears it
+/// from the panic hook itself, before the trap, with `evora:failed {code: "panic"}` (§4.4), built
+/// now (the hook only posts it, once) and without any detail: the shell shows its own message. The
+/// page (`index.html`) learns the admitted origin to report an abort without a panic (out of
+/// memory), unless the hook already did.
+fn report_panics(parent: &web_sys::Window, origin: &str) {
+    if let Some(load) = page_load_state() {
+        let _ = js_sys::Reflect::set(&load, &JsValue::from_str("ehpOrigin"), &JsValue::from_str(origin));
+    }
+    // The wasm build aborts on a panic. Were it to unwind, upstream would catch a panel's panic and
+    // the session would go on: nothing to report then.
+    if !cfg!(panic = "abort") {
+        return;
+    }
+    let Some(payload) = object(&[("code", "panic".into())]) else { return };
+    let Some((message, _)) = envelope("evora:failed", None, &payload) else { return };
+    ON_PANIC.with(|p| *p.borrow_mut() = Some((parent.clone(), origin.to_string(), message)));
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report_panic();
+        previous(info);
+    }));
+}
+
+/// The panic hook's part: post the prepared `evora:failed`, once.
+fn report_panic() {
+    let Some((parent, origin, message)) = ON_PANIC.with(|p| p.try_borrow_mut().ok().and_then(|mut p| p.take())) else { return };
+    if let Some(load) = page_load_state() {
+        let _ = js_sys::Reflect::set(&load, &JsValue::from_str("ehpFailed"), &JsValue::TRUE);
+    }
+    let _ = parent.post_message(&message, &origin);
+}
+
+/// `window.filmcraftLoad`, the page's start-up state (`index.html`).
+fn page_load_state() -> Option<JsValue> {
+    let window = web_sys::window()?;
+    let load = get(&JsValue::from(window), "filmcraftLoad");
+    load.is_object().then_some(load)
+}
+
+/// `filmcraft.injectPanic()`: upstream's fault injection (the next UI pass panics,
+/// `FilmcraftApp::panic_next_frame`), for the CI smoke test of the panic report. Only once the bridge
+/// listens; a script that can call it can already stop the page.
+fn install_fault_injection() {
+    let Some(window) = web_sys::window() else { return };
+    let api = get(&JsValue::from(window), "filmcraft");
+    if !api.is_object() {
+        return;
+    }
+    let inject = Closure::<dyn Fn()>::new(|| crate::post(|w, _| w.app.panic_next_frame = true)).into_js_value();
+    let _ = js_sys::Reflect::set(&api, &JsValue::from_str("injectPanic"), &inject);
 }
 
 /// After each frame: `evora:dirty` when the project Evora opened gains or loses unsaved changes.

@@ -29,6 +29,9 @@
     #fatal h1 { margin: 0 0 8px; font-size: 17px; color: #ff8a7a; }
     #fatal pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; font-size: 12px; color: #c9c9cc; }
     #fatal button { font: inherit; padding: 6px 14px; border: 0; border-radius: 6px; background: #4F46E5; color: #fff; cursor: pointer; }
+    /* Evora fork (E4): inside Evora's shell (?host=evora) the shell shows its own localized message
+       (evora:failed, HOST-PROTOCOL §4.4): no text here, no promise, no technical detail, no reload. */
+    html.hosted #fatal .box, html.hosted #loading .err { display: none; }
   </style>
 </head>
 <body>
@@ -47,7 +50,24 @@
     // "panicked at …" with console.error, then the wasm traps ("RuntimeError: unreachable") and
     // the canvas freezes or goes blank. Show what happened instead of a dead page.
     window.filmcraftLoad = {};
-    if (new URLSearchParams(location.search).get("theme") === "light") document.documentElement.classList.add("light");
+    const query = new URLSearchParams(location.search);
+    if (query.get("theme") === "light") document.documentElement.classList.add("light");
+    const hosted = query.get("host") === "evora";
+    if (hosted) document.documentElement.classList.add("hosted");
+    // Evora fork (E4): an engine stopped for good tells Evora's shell (evora:failed), once, and only
+    // to the origin the host bridge admitted (filmcraftLoad.ehpOrigin, set by the bridge). The Rust
+    // panic hook reports a panic itself (filmcraftLoad.ehpFailed); this covers an abort without one.
+    const reportToHost = (code) => {
+      const L = window.filmcraftLoad;
+      if (!hosted || !L.ehpOrigin || L.ehpFailed) return;
+      L.ehpFailed = true;
+      const A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ", r = new Uint8Array(16);
+      crypto.getRandomValues(r);
+      let t = Date.now(), id = "";
+      for (let i = 0; i < 10; i++) { id = A[t % 32] + id; t = Math.floor(t / 32); }
+      for (const b of r) id += A[b % 32];
+      parent.postMessage({ v: 1, type: "evora:failed", id, payload: { code } }, L.ehpOrigin);
+    };
     let lastPanic = null;
     const consoleError = console.error.bind(console);
     console.error = (...a) => {
@@ -60,7 +80,8 @@
       const msg = lastPanic || String(what && (what.stack || what.message) || what);
       window.filmcraftLoad.fatal = msg;
       const el = document.getElementById("fatal");
-      document.getElementById("fatal-msg").textContent = msg.split("\n\nStack:")[0];
+      if (hosted) reportToHost(/memory allocation of/.test(msg) ? "memory" : "panic");
+      else document.getElementById("fatal-msg").textContent = msg.split("\n\nStack:")[0];
       el.classList.add("on");
     };
     document.getElementById("fatal-reload").onclick = () => location.reload();
