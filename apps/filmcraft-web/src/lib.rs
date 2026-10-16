@@ -32,7 +32,7 @@ pub mod recovery;
 pub mod recovery_policy;
 pub mod webcodecs;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use filmcraft_engine::Session;
@@ -47,12 +47,57 @@ thread_local! {
     static ACTIONS: RefCell<Vec<Action>> = const { RefCell::new(Vec::new()) };
     static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
     static INFO: RefCell<serde_json::Value> = const { RefCell::new(serde_json::Value::Null) };
+    /// Evora fork (patch E4): the running app's runner, to carry out posted actions between frames.
+    static RUNNER: RefCell<Option<eframe::WebRunner>> = const { RefCell::new(None) };
+    /// Evora fork (patch E4): a [`pump`] of the posted actions is scheduled.
+    static PUMP: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Run `f` on the UI thread at the next frame.
+/// Evora fork (patch E4): milliseconds a posted action waits for a UI frame before it is carried out
+/// without one.
+const PUMP_AFTER_MS: i32 = 100;
+
+/// Run `f` on the UI thread at the next frame. Evora fork (patch E4): inside Evora's shell, also
+/// without a frame when none comes soon ([`pump`]).
 pub fn post(f: impl FnOnce(&mut WebApp, &egui::Context) + 'static) {
     ACTIONS.with(|a| a.borrow_mut().push(Box::new(f)));
     repaint();
+    schedule_pump();
+}
+
+/// Evora fork (patch E4): inside Evora's shell, schedule a [`pump`] (one at a time).
+fn schedule_pump() {
+    if !opfs::hosted() || PUMP.get() {
+        return;
+    }
+    let Some(window) = web_sys::window() else { return };
+    let run = Closure::once_into_js(|| {
+        PUMP.set(false);
+        pump();
+    });
+    if window.set_timeout_with_callback_and_timeout_and_arguments_0(run.unchecked_ref(), PUMP_AFTER_MS).is_ok() {
+        PUMP.set(true);
+    }
+}
+
+/// Evora fork (patch E4): carry out the posted actions a frame has not taken yet. eframe draws its
+/// frames on `requestAnimationFrame` while the page is visible (a timer once the tab is hidden), and
+/// the browser runs no animation frame for an iframe it does not paint (`display: none`, off
+/// screen) even in a visible tab: the answers to Evora's shell (`evora:save`, `evora:ack`) must not
+/// wait for it. Then the `evora:dirty` a save causes is reported too.
+fn pump() {
+    if ACTIONS.with(|a| a.borrow().is_empty()) {
+        return;
+    }
+    let Some(ctx) = CTX.with(|c| c.borrow().clone()) else { return };
+    let Some(runner) = RUNNER.with(|r| r.borrow().clone()) else { return };
+    // `None` during a frame, after a panic, or before the app exists: the next frame takes them
+    let Some(mut app) = runner.app_mut::<WebApp>() else { return };
+    let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    for f in actions {
+        f(&mut *app, &ctx);
+    }
+    ehp::tick(&app.app.session);
 }
 
 /// Ask for a UI frame.
@@ -96,6 +141,11 @@ pub struct WebApp {
 impl eframe::App for WebApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.app.raw_input_hook(ctx, raw_input);
+    }
+
+    /// Evora fork (patch E4): lets [`pump`] reach the app between frames (`WebRunner::app_mut`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(&mut *self)
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -318,6 +368,11 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         return Err(e);
     }
     set_info("startupMs", json!(t0.elapsed().as_secs_f64() * 1000.0));
+    if hosted {
+        RUNNER.with(|r| *r.borrow_mut() = Some(runner.clone()));
+        // actions posted before the runner was known
+        schedule_pump();
+    }
     // keep the runner alive for the page's lifetime
     std::mem::forget(runner);
     if let Some(el) = doc.get_element_by_id("loading") {
