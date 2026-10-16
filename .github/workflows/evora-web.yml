@@ -15,7 +15,10 @@
 # contre un témoin sabordé qui doit être déclaré rouge) et le correctif E5 (espace de noms par
 # evora:init seulement, purges). Porte evora-host.json : livré vide (pont muet), sans .br ni .gz.
 # Sorties : evora-corte-web-<tag>.zip (site, .br/.gz, LICENSES/, csp-hashes.txt, evora-host.json vide),
-# SHA256SUMS, csp-hashes.txt. L'artefact au nom Evora n'est publié que si toutes les portes sont vertes.
+# SHA256SUMS, csp-hashes.txt. L'artefact au nom Evora n'est publié que par le job final
+# « publication », qui attend le job web (portes, fumée) ET le job tests : un run rouge, quel que soit
+# le job en échec, ne publie jamais d'artefact au nom Evora. Le job web ne transmet qu'une archive
+# interne, au nom non publiable, gardée un jour.
 name: Evora web
 
 on:
@@ -53,6 +56,8 @@ jobs:
     name: Web (wasm)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
     steps:
       - name: Image du runner (épinglée)
         shell: bash
@@ -350,25 +355,16 @@ jobs:
           cat SHA256SUMS
           { echo "### SHA256SUMS"; echo; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Artefact (nom Evora, portes vertes)
-        id: upload
+      - name: Archive interne (non publiable, pour le job de publication)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ steps.meta.outputs.name }}
+          name: evora-interne-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/evora/${{ steps.meta.outputs.name }}.zip
             dist/evora/SHA256SUMS
             dist/evora/csp-hashes.txt
           if-no-files-found: error
-
-      - name: Empreinte de l'artefact
-        shell: bash
-        env:
-          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
-        run: |
-          echo "::notice::artefact ${{ steps.meta.outputs.name }} id $ARTIFACT_ID, sha256:$ARTIFACT_DIGEST"
-          echo "- Artefact \`${{ steps.meta.outputs.name }}\` : id $ARTIFACT_ID, empreinte sha256:$ARTIFACT_DIGEST ; commit \`$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          retention-days: 1
 
   tests:
     name: Tests ciblés ui-egui (catalogues, liens)
@@ -419,3 +415,59 @@ jobs:
       - name: Liens à l'écran (test d'interface sans GPU)
         shell: bash
         run: cargo test --locked -p filmcraft-ui-egui --test links_ui
+
+  publish:
+    name: Publication (artefact au nom Evora, portes et tests verts)
+    needs: [web, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Image du runner (épinglée)
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "image : ${ImageOS:-?} ${ImageVersion:-?} ; $PRETTY_NAME"
+          if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != "${EVORA_IMAGE#ubuntu-}" ]; then
+            echo "::error::image $ID $VERSION_ID inattendue (épinglée : $EVORA_IMAGE)"
+            exit 1
+          fi
+
+      - name: Archive interne du job web
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: evora-interne-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/evora
+
+      - name: Contrôle de SHA256SUMS
+        shell: bash
+        env:
+          NAME: ${{ needs.web.outputs.name }}
+        run: |
+          cd dist/evora
+          [[ "$NAME" =~ ^evora-corte-web-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::nom d'archive inattendu « $NAME »"; exit 1; }
+          ls -l
+          cat SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 2 ] || { echo "::error::SHA256SUMS doit porter 2 lignes"; exit 1; }
+          grep -q "  $NAME.zip\$" SHA256SUMS || { echo "::error::$NAME.zip absent de SHA256SUMS"; exit 1; }
+          sha256sum -c SHA256SUMS
+
+      - name: Artefact (nom Evora, portes et tests verts)
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.web.outputs.name }}
+          path: |
+            dist/evora/${{ needs.web.outputs.name }}.zip
+            dist/evora/SHA256SUMS
+            dist/evora/csp-hashes.txt
+          if-no-files-found: error
+
+      - name: Empreinte de l'artefact
+        shell: bash
+        env:
+          NAME: ${{ needs.web.outputs.name }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          echo "::notice::artefact $NAME id $ARTIFACT_ID, sha256:$ARTIFACT_DIGEST"
+          { echo "### Artefact au nom Evora"; echo; echo "- \`$NAME\` : id $ARTIFACT_ID, empreinte sha256:$ARTIFACT_DIGEST ; commit \`$GITHUB_SHA\`"; echo; echo '```'; cat dist/evora/SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
