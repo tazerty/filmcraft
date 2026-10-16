@@ -225,7 +225,21 @@ const HARNESS_JS = `(() => {
     },
     relay: (which, msgs) => { const f = document.getElementById(which); f.contentWindow.postMessage({ relay: msgs }, new URL(f.src, location.href).origin); return msgs.length; },
     hide: (on) => { frame.style.display = on ? "none" : "block"; return frame.style.display; },
-    verrou: (path, ms) => { document.getElementById("verrou").contentWindow.postMessage({ op: "hold", path, ms }, engineOrigin()); return true; },
+    // le « second onglet » n'est créé qu'à la première demande : l'iframe du moteur est alors déjà
+    // attachée au banc, et reste la seule à laquelle il parle (inChild)
+    verrou: (path, ms) => {
+      let f = document.getElementById("verrou");
+      const go = () => f.contentWindow.postMessage({ op: "hold", path, ms }, engineOrigin());
+      if (f) { go(); return true; }
+      f = document.createElement("iframe");
+      f.id = "verrou";
+      f.title = "verrou";
+      f.style.cssText = "border:0;width:8px;height:8px";
+      f.addEventListener("load", go, { once: true });
+      f.src = engineOrigin() + "/__verrou/index.html";
+      document.body.appendChild(f);
+      return true;
+    },
   };
 })();
 `;
@@ -324,7 +338,6 @@ const parent = createServer((req, res) => {
  style="border:0;display:block;width:1280px;height:800px"></iframe>
 <iframe id="jumeau" src="/jumeau.html${q}" title="jumeau" style="border:0;width:1px;height:1px"></iframe>
 <iframe id="intrus" src="${intruderOrigin}/intrus.html${q}" title="intrus" style="border:0;width:1px;height:1px"></iframe>
-<iframe id="verrou" src="${engineOrigin}/__verrou/index.html" title="verrou" style="border:0;width:8px;height:8px"></iframe>
 <script src="/ehp-harness.js"></script></body></html>`);
 });
 
@@ -469,8 +482,10 @@ try {
         const info = p.targetInfo;
         const isFrame = info.type === "iframe";
         sessions.set(p.sessionId, { role: isFrame ? "iframe" : info.type, gen: 0 });
-        // l'iframe du moteur (les relais, même site que la parente, restent dans son processus)
-        if (isFrame && (!childSession || String(info.url || "").startsWith(engineOrigin))) childSession = p.sessionId;
+        // l'iframe du moteur (les relais, même site que la parente, restent dans son processus ; le
+        // « second onglet » /__verrou/, de même origine que le moteur, n'est jamais pris pour lui)
+        const helper = String(info.url || "").includes("/__verrou/");
+        if (isFrame && !helper && (!childSession || String(info.url || "").startsWith(engineOrigin))) childSession = p.sessionId;
         try {
           await cdp.send("Runtime.enable", {}, p.sessionId);
           await cdp.send("Log.enable", {}, p.sessionId).catch(() => {});
