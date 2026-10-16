@@ -107,6 +107,7 @@ const TEMOIN_JS = `(() => {
     },
     request: async () => [],
     info: () => ({ ehp: "ready", storage: "namespace", opfs: true }),
+    injectPanic: () => { setTimeout(() => { throw new WebAssembly.RuntimeError("unreachable"); }, 0); },
   };
   addEventListener("message", (e) => {
     const d = e.data, p = (d && d.payload) || {};
@@ -437,6 +438,9 @@ try {
   let childSession = null;
   const contexts = new Map(); // frameId -> contextId (repli si l'iframe n'est pas hors processus)
   const okGens = new Set(); // générations de document du moteur qui ont démarré (leurs erreurs comptent)
+  // génération du moteur -> index du journal à partir duquel un arrêt est provoqué exprès (E4 :
+  // panique, abandon) : ses erreurs, attendues, ne comptent pas
+  const crashAt = new Map();
   cdp.on(async (msg) => {
     const s = msg.sessionId ? sessions.get(msg.sessionId) : null;
     const role = s ? s.role : "browser";
@@ -1057,6 +1061,46 @@ try {
       if (!Array.isArray(afterRemoval) || afterRemoval.some((p) => p.startsWith(`evora-corte/${NS}/`)) || storage2 !== "closed") {
         flag("RECREATION", `espace recréé après son effacement par un autre onglet : ${JSON.stringify(r.recreation)}`);
       }
+      // 15. panique provoquée (injection de faute amont, FilmcraftApp::panic_next_frame) : le moteur
+      //     s'arrête ; evora:failed {code: "panic"} une seule fois, et aucun texte du moteur à l'écran
+      //     (la coquille affiche son propre message, §4.4)
+      if (mode !== "oopif") {
+        flag("PREMISSE", `iframe dans le processus de la parente (${mode}) : un arrêt provoqué ne peut pas être isolé`);
+        return { bad, r };
+      }
+      const failedOf = (log) => fromEngine(log).filter((m) => m.type === "evora:failed");
+      const screenOf = () => inChild("(() => { const f = document.getElementById('fatal'); return { fatal: !!(window.filmcraftLoad && window.filmcraftLoad.fatal), shown: !!(f && f.classList.contains('on')), text: f ? f.innerText.trim() : null }; })()").catch((e) => String(e));
+      crashAt.set(sessions.get(childSession).gen, events.length);
+      const injected = await inChild("typeof filmcraft.injectPanic === 'function' ? (filmcraft.injectPanic(), true) : 'absent'").catch((e) => String(e));
+      await waitFor((log) => failedOf(log).length > 0, 15000);
+      await sleep(2000);
+      const panicFailed = failedOf(await getLog());
+      r.panic = { injected, failed: panicFailed.map((m) => ({ keys: m.payloadKeys, payload: m.payload })), screen: await screenOf() };
+      if (injected !== true) flag("PREMISSE", `injection de faute indisponible : ${JSON.stringify(r.panic)}`);
+      else if (panicFailed.length !== 1 || JSON.stringify(panicFailed[0].payloadKeys) !== JSON.stringify(["code"]) || panicFailed[0].payload?.code !== "panic" ||
+        typeof r.panic.screen !== "object" || !r.panic.screen.fatal || r.panic.screen.text !== "") {
+        flag("PANIQUE", `après une panique : ${JSON.stringify(r.panic)}`);
+      }
+      // 16. troisième chargement : arrêt sans panique (abandon sur manque de mémoire : le crochet de
+      //     panique ne joue pas) ; le repli de la page envoie evora:failed {code: "memory"} à l'origine
+      //     admise par le pont, une seule fois
+      await inParent("window.__ehp.clear()");
+      const third = await reload("host=evora&lang=en&theme=dark&troisieme", path);
+      const ready3 = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:ready"), 20000);
+      if (!third?.readyMs || !ready3) {
+        flag("DEMARRAGE", `troisième chargement : ${JSON.stringify(third)}`);
+        return { bad, r };
+      }
+      crashAt.set(sessions.get(childSession).gen, events.length);
+      const aborted = await inChild("(() => { console.error('memory allocation of 1048576 bytes failed'); dispatchEvent(new ErrorEvent('error', { error: new WebAssembly.RuntimeError('unreachable'), message: 'unreachable' })); return true; })()").catch((e) => String(e));
+      await waitFor((log) => failedOf(log).length > 0, 10000);
+      await sleep(1500);
+      const memoryFailed = failedOf(await getLog());
+      r.memory = { aborted, failed: memoryFailed.map((m) => m.payload), screen: await screenOf() };
+      if (aborted !== true) flag("PREMISSE", `abandon simulé impossible : ${JSON.stringify(r.memory)}`);
+      else if (memoryFailed.length !== 1 || memoryFailed[0].payload?.code !== "memory" || typeof r.memory.screen !== "object" || r.memory.screen.text !== "") {
+        flag("MEMOIRE", `après un abandon sans panique : ${JSON.stringify(r.memory)}`);
+      }
       return { bad, r };
     }
 
@@ -1067,7 +1111,7 @@ try {
     // Témoin sabordé : le même banc contre un faux moteur fautif doit relever chacune de ses fautes.
     const witness = await pontEhp("/__temoin/index.html");
     const tags = [...new Set(witness.bad.map((b) => b.tag))].sort();
-    const mustFlag = ["MASQUE", "NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
+    const mustFlag = ["MASQUE", "MEMOIRE", "NS", "NS-ECRITURE", "ORIGINE", "PANIQUE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
     report.ehp.witness = { tags, failures: witness.bad.length, run: witness.r.intrusions ?? null };
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
@@ -1083,10 +1127,12 @@ try {
   // premier document abandonné pour le repli ?webgl ne compte pas)
   report.events = events;
   const blocking = events.filter(
-    (e) =>
+    (e, i) =>
       (e.kind === "exception" || e.kind === "console.error" || e.kind === "log.error") &&
+      !(e.role === "iframe" && crashAt.has(e.gen) && i >= crashAt.get(e.gen)) &&
       (e.role === "parent" ? true : e.role === "iframe" ? okGens.has(e.gen) : e.role !== "browser"),
   );
+  report.expectedCrashes = [...crashAt.entries()].map(([gen, from]) => ({ gen, from, events: events.filter((e, i) => e.role === "iframe" && e.gen === gen && i >= from).length }));
   report.blockingEvents = blocking;
   for (const e of blocking) fail(`${e.role} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).slice(0, 400)}`);
   const unknown404 = report.requests.filter((r) => r.status !== 200);
