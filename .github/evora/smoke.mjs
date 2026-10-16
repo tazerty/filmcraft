@@ -25,6 +25,24 @@ const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);
   return i > 0 ? process.argv[i + 1] : d;
 };
+// Arguments : un argument inconnu ou sans sa valeur arrête la fumée (code 2), et chaque famille de
+// contrôles est exigée : un drapeau retiré ou renommé dans le workflow ne saute plus une famille en
+// silence (« non vérifié » avec un verdict vert).
+const VALUED = ["site", "csp", "out", "chrome", "emoji", "terms", "timeout"];
+const FAMILIES = ["lang-checks", "storage-checks", "theme-checks", "ehp-checks"];
+for (let i = 2; i < process.argv.length; i++) {
+  const k = process.argv[i].startsWith("--") ? process.argv[i].slice(2) : null;
+  if (k && VALUED.includes(k) && i + 1 < process.argv.length) i++;
+  else if (!(k && FAMILIES.includes(k))) {
+    console.error(`::error::argument inconnu ou incomplet : ${process.argv[i]}`);
+    process.exit(2);
+  }
+}
+const missingFamilies = FAMILIES.filter((f) => !process.argv.includes(`--${f}`));
+if (missingFamilies.length) {
+  console.error(`::error::familles de contrôles absentes : ${missingFamilies.join(", ")}`);
+  process.exit(2);
+}
 const site = resolve(arg("site", ""));
 const cspFile = arg("csp", "");
 const out = resolve(arg("out", join(tmpdir(), "evora-smoke")));
@@ -1009,7 +1027,8 @@ try {
       if (engineLeft(atAck)) flag("PURGE", `stockage du moteur encore présent à l'accusé : ${JSON.stringify(atAck)}`);
       if (engineLeft(later)) flag("PURGE", `stockage du moteur réécrit après la purge : ${JSON.stringify(later)}`);
       if (!Array.isArray(later) || !later.includes("autre-moteur/garder.txt")) flag("PURGE", `la purge a effacé le stockage d'un autre moteur : ${JSON.stringify(later)}`);
-      if (typeof web !== "object" || web.localStorage?.length !== 0 || (Array.isArray(web.indexedDB) && web.indexedDB.length !== 0)) flag("PURGE", `localStorage ou IndexedDB non vides : ${JSON.stringify(web)}`);
+      // indexedDB.databases() absent : la mesure ne prouve rien, elle échoue
+      if (typeof web !== "object" || web.localStorage?.length !== 0 || !Array.isArray(web.indexedDB) || web.indexedDB.length !== 0) flag("PURGE", `localStorage ou IndexedDB non vides ou non mesurés : ${JSON.stringify(web)}`);
       // 13. toute enveloppe reçue du moteur est conforme (§3, §4.4, §4.5)
       const all = fromEngine(await getLog());
       const ids = new Set();
@@ -1111,7 +1130,8 @@ try {
     // Témoin sabordé : le même banc contre un faux moteur fautif doit relever chacune de ses fautes.
     const witness = await pontEhp("/__temoin/index.html");
     const tags = [...new Set(witness.bad.map((b) => b.tag))].sort();
-    const mustFlag = ["MASQUE", "MEMOIRE", "NS", "NS-ECRITURE", "ORIGINE", "PANIQUE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
+    const mustFlag = ["INIT-PURGE", "MASQUE", "MEMOIRE", "NS", "NS-ECRITURE", "ORIGINE", "PANIQUE", "PLAFOND", "PURGE", "READY", "RECREATION", "SAVE", "SCHEMA",
+      "SOURCE", "V2", "VERROU"];
     report.ehp.witness = { tags, failures: witness.bad.length, run: witness.r.intrusions ?? null };
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
@@ -1135,6 +1155,10 @@ try {
   report.expectedCrashes = [...crashAt.entries()].map(([gen, from]) => ({ gen, from, events: events.filter((e, i) => e.role === "iframe" && e.gen === gen && i >= from).length }));
   report.blockingEvents = blocking;
   for (const e of blocking) fail(`${e.role} ${e.kind}${e.source ? " [" + e.source + "]" : ""} : ${String(e.text).slice(0, 400)}`);
+  // chaque famille demandée a bien tourné jusqu'à son rapport
+  for (const [flagName, key] of [["lang-checks", "lang"], ["storage-checks", "storageE5"], ["theme-checks", "theme"], ["ehp-checks", "ehp"]]) {
+    if (process.argv.includes(`--${flagName}`) && report[key] === undefined) fail(`famille --${flagName} demandée mais sans rapport : elle n'a pas tourné`);
+  }
   const unknown404 = report.requests.filter((r) => r.status !== 200);
   if (unknown404.length) fail(`requêtes en erreur : ${JSON.stringify(unknown404)}`);
 
