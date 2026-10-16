@@ -43,13 +43,27 @@ env:
   EVORA_TERMS_GATE: "block"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Image des runners, épinglée (ubuntu-latest change d'image sans prévenir) : c'est aussi celle
+  # de chaque `runs-on` ci-dessous, contrôlée au début de chaque job, et elle nomme le cache des
+  # outils compilés (un binaire d'une autre image n'y est jamais restauré).
+  EVORA_IMAGE: "ubuntu-24.04"
 
 jobs:
   web:
     name: Web (wasm)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
+      - name: Image du runner (épinglée)
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "image : ${ImageOS:-?} ${ImageVersion:-?} ; $PRETTY_NAME"
+          if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != "${EVORA_IMAGE#ubuntu-}" ]; then
+            echo "::error::image $ID $VERSION_ID inattendue (épinglée : $EVORA_IMAGE)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,7 +129,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.evora-tools
-          key: evora-tools-${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN }}-wb-${{ env.WASM_BINDGEN_VERSION }}-deny-${{ env.CARGO_DENY_VERSION }}-about-${{ env.CARGO_ABOUT_VERSION }}
+          key: evora-tools-${{ env.EVORA_IMAGE }}-rust-${{ env.RUST_TOOLCHAIN }}-wb-${{ env.WASM_BINDGEN_VERSION }}-deny-${{ env.CARGO_DENY_VERSION }}-about-${{ env.CARGO_ABOUT_VERSION }}
 
       - name: Outils épinglés (wasm-bindgen-cli, cargo-deny, cargo-about)
         shell: bash
@@ -358,9 +372,19 @@ jobs:
 
   tests:
     name: Tests ciblés ui-egui (catalogues, liens)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
+      - name: Image du runner (épinglée)
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "image : ${ImageOS:-?} ${ImageVersion:-?} ; $PRETTY_NAME"
+          if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != "${EVORA_IMAGE#ubuntu-}" ]; then
+            echo "::error::image $ID $VERSION_ID inattendue (épinglée : $EVORA_IMAGE)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
