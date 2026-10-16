@@ -481,8 +481,10 @@ fn on_init(id: String, re: Option<&str>, p: &JsValue) {
             log::warn!("Evora storage purge at start-up: {e:?}");
             ok = false;
         }
-        if ok && namespace {
-            opfs::open_namespace(&ns);
+        // the namespace directory is created here, once; refused (sealed by an evora:purge meanwhile,
+        // or not creatable): busy, OPFS stays closed
+        if ok && namespace && !opfs::open_namespace(&ns).await {
+            ok = false;
         }
         crate::set_info("storage", json!(opfs::describe()));
         crate::set_info("opfs", json!(opfs::available()));
