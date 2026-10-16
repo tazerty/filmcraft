@@ -121,7 +121,7 @@ const TEMOIN_JS = `(() => {
       })();
     }
     else if (d.type === "evora:open") { docRef = p.docRef; name = String(p.name || "").replace(/\\.fcproj$/, ""); path = "/evora/" + docRef + "/" + p.name; dirty = false; post("evora:ack", { ok: true }, d.id); post("evora:dirty", { dirty: false, docRef }); }
-    else if (d.type === "evora:request-save") { if (dirty) save(d.id); else post("evora:ack", { ok: true, code: "clean" }, d.id); }
+    else if (d.type === "evora:request-save") requestAnimationFrame(() => { if (dirty) save(d.id); else post("evora:ack", { ok: true, code: "clean" }, d.id); });
     else if (d.type === "evora:lang") { prefs["general.interfaceLanguage"] = p.engineLang || "en"; post("evora:ack", { ok: true }, d.id); }
     else if (d.type === "evora:theme") { prefs["appearance.appearanceMode"] = p.theme; post("evora:ack", { ok: true }, d.id); }
     else if (d.type === "evora:purge") post("evora:ack", { ok: true }, d.id);
@@ -205,6 +205,7 @@ const HARNESS_JS = `(() => {
       return m.id;
     },
     relay: (which, msgs) => { const f = document.getElementById(which); f.contentWindow.postMessage({ relay: msgs }, new URL(f.src, location.href).origin); return msgs.length; },
+    hide: (on) => { frame.style.display = on ? "none" : "block"; return frame.style.display; },
     verrou: (path, ms) => { document.getElementById("verrou").contentWindow.postMessage({ op: "hold", path, ms }, engineOrigin()); return true; },
   };
 })();
@@ -968,7 +969,24 @@ try {
         language: await exec("prefs.get", { key: "general.interfaceLanguage" }), saveAs: (Array.isArray(items) ? items : []).find((m) => m.id === "file.saveAs")?.label ?? null };
       if (thAck?.payload?.ok !== true || r.live.mode !== "light") flag("THEME", `evora:theme : ${JSON.stringify(r.live)}`);
       if (laAck?.payload?.ok !== true || r.live.language !== "es" || (path === "/index.html" && r.live.saveAs !== "Guardar como…")) flag("LANG", `evora:lang : ${JSON.stringify(r.live)}`);
-      // 11. evora:purge pendant des modifications : accusé APRÈS effacement, puis plus aucune écriture
+      // 11. iframe masquée (display: none) : le navigateur ne lui donne plus aucune image
+      //     (requestAnimationFrame), même onglet visible ; evora:request-save reçoit pourtant sa
+      //     réponse (§7.2) : elle n'attend pas le retour de l'iframe à l'écran
+      await exec("file.newSequence", { name: "E4-m" });
+      const dirtyHidden = await waitFor((log) => fromEngine(log).filter((m) => m.type === "evora:dirty" && m.payload?.docRef === R2).at(-1)?.payload?.dirty === true, 10000);
+      await inParent("window.__ehp.hide(true)");
+      await sleep(1500);
+      const rsHidden = await send(await msg("evora:request-save", { reason: "visibility" }));
+      const saveHidden = await waitFor(answer(rsHidden), 10000);
+      await inParent("window.__ehp.hide(false)");
+      r.hidden = { dirty: !!dirtyHidden, answer: saveHidden ? { type: saveHidden.type, payload: saveHidden.payload } : null };
+      if (!dirtyHidden) flag("PREMISSE", `aucune modification avant le masquage : ${JSON.stringify(r.hidden)}`);
+      else if (saveHidden?.type !== "evora:save" || saveHidden.payload?.docRef !== R2 || saveHidden.payload?.bytes?.format !== "filmcraft.project") {
+        flag("MASQUE", `réponse à evora:request-save, iframe masquée : ${JSON.stringify(r.hidden)}`);
+      }
+      if (saveHidden?.type === "evora:save") await send(await msg("evora:saved", { ok: true, version: 3 }, { re: saveHidden.id }));
+      await sleep(1000);
+      // 12. evora:purge pendant des modifications : accusé APRÈS effacement, puis plus aucune écriture
       await exec("file.newSequence", { name: "E4-c" });
       const pg = await send(await msg("evora:purge", { scope: "current" }));
       const pgAck = await waitFor(answer(pg, "evora:ack"), 20000);
@@ -988,7 +1006,7 @@ try {
       if (engineLeft(later)) flag("PURGE", `stockage du moteur réécrit après la purge : ${JSON.stringify(later)}`);
       if (!Array.isArray(later) || !later.includes("autre-moteur/garder.txt")) flag("PURGE", `la purge a effacé le stockage d'un autre moteur : ${JSON.stringify(later)}`);
       if (typeof web !== "object" || web.localStorage?.length !== 0 || (Array.isArray(web.indexedDB) && web.indexedDB.length !== 0)) flag("PURGE", `localStorage ou IndexedDB non vides : ${JSON.stringify(web)}`);
-      // 12. toute enveloppe reçue du moteur est conforme (§3, §4.4, §4.5)
+      // 13. toute enveloppe reçue du moteur est conforme (§3, §4.4, §4.5)
       const all = fromEngine(await getLog());
       const ids = new Set();
       for (const m of all) {
@@ -1009,7 +1027,7 @@ try {
       const failed = all.filter((m) => m.type === "evora:failed");
       if (failed.length) flag("DEMARRAGE", `evora:failed reçu : ${JSON.stringify(failed)}`);
       r.messages = all.map((m) => m.type + (m.hasRe ? ` (re ${String(m.re).slice(-4)})` : ""));
-      // 13. second chargement : l'espace du compte effacé par un autre onglet (changement de compte)
+      // 14. second chargement : l'espace du compte effacé par un autre onglet (changement de compte)
       //     n'est jamais recréé par une écriture ; le moteur ferme alors OPFS pour de bon (E5)
       await inParent("window.__ehp.clear()");
       const second = await reload("host=evora&lang=en&theme=dark&second", path);
@@ -1049,7 +1067,7 @@ try {
     // Témoin sabordé : le même banc contre un faux moteur fautif doit relever chacune de ses fautes.
     const witness = await pontEhp("/__temoin/index.html");
     const tags = [...new Set(witness.bad.map((b) => b.tag))].sort();
-    const mustFlag = ["NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
+    const mustFlag = ["MASQUE", "NS", "NS-ECRITURE", "ORIGINE", "PURGE", "READY", "RECREATION", "SCHEMA", "SOURCE", "V2", "VERROU"];
     report.ehp.witness = { tags, failures: witness.bad.length, run: witness.r.intrusions ?? null };
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
