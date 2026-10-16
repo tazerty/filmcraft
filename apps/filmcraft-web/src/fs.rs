@@ -338,6 +338,11 @@ impl Services for WebServices {
 
     fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
         if let Some(rel) = path.strip_prefix("/opfs/") {
+            // Evora fork (patch E5): inside Evora's shell, a write to a closed OPFS (before
+            // `evora:init`, after a purge) fails instead of vanishing
+            if crate::opfs::hosted() && !crate::opfs::available() {
+                return Err(io::Error::other("the browser's storage is closed inside Evora"));
+            }
             crate::opfs::write(rel.to_string(), data.to_vec());
         }
         let hook = FS.with(|fs| {
