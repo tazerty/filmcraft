@@ -670,13 +670,17 @@ try {
   const LIST_ALL =
     "(async () => { const out = []; const walk = async (d, pre) => { for await (const [n, h] of d.entries()) { if (h.kind === 'directory') { out.push(pre + n + '/'); await walk(h, pre + n + '/'); } else out.push(pre + n); } }; await walk(await navigator.storage.getDirectory(), ''); return out.sort(); })()";
 
-  // E3 : langue imposée par ?lang= (codes Evora ; zh-Hans → zh-cn ; pt en attente de D-23)
+  // E3 : langue imposée par ?lang= (codes Evora ; zh-Hans → zh-cn ; pt en attente de D-23).
+  // Depuis la v0.9.0 : it a un catalogue ; ko aussi, mais le build web n'a aucune police hangul :
+  // la langue demandée au moteur est « ko » et le canevas reste en anglais (comme ja et zh-cn sans
+  // police).
   if (langChecks) {
     report.lang = {};
     for (const [tag, code, saveAs] of [
       ["fr", "fr", "Enregistrer sous…"],
+      ["it", "it", "Salva con nome…"],
       ["pt", "en", "Save As…"],
-      ["ko", "en", "Save As…"],
+      ["ko", "ko", "Save As…"],
       ["zh-Hans", "zh-cn", null],
     ]) {
       const l = await reload(`empty&lang=${encodeURIComponent(tag)}`);
