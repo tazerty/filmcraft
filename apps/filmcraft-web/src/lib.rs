@@ -219,7 +219,8 @@ fn apply_evora_theme(app: &mut FilmcraftApp) {
 
 /// Evora fork (patch E3): the interface language Evora's shell imposes with `?lang=`, whatever
 /// the saved preference. Unknown or undecided languages (`pt`, D-23) keep the canvas in English;
-/// Japanese and Chinese still need a font (otherwise the engine stays in English and says so).
+/// Japanese, Chinese and Korean still need a font (otherwise the engine stays in English and says
+/// so).
 fn impose_language(app: &mut FilmcraftApp) {
     let Some(tag) = query_value("lang") else { return };
     let code = filmcraft_ui_egui::i18n::Language::from_evora(&tag).map_or("en", |l| l.code());

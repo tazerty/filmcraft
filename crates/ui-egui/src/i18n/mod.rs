@@ -148,8 +148,10 @@ impl Language {
     /// zh-Hans) or this engine's own codes, any case. `zh-Hans` (also `zh-hans`, `zh-CN`, `zh`)
     /// gives the Simplified Chinese catalog. `pt` gives nothing until Evora chooses between the
     /// Brazilian and European variants (decision D-23); the explicit engine code `pt-br` is
-    /// honoured. Languages without a catalog here (ar, hi, it, ko, tr…) give `None`: the canvas
-    /// stays in English and the shell shows its translated banner.
+    /// honoured. Languages without a catalog here (ar, hi, tr…) give `None`: the canvas stays in
+    /// English and the shell shows its translated banner. Italian and Korean have a catalog since
+    /// v0.9.0; Korean, like Japanese and Chinese, also needs a font (the web build has no Hangul
+    /// face), otherwise the engine stays in English and says so.
     pub fn from_evora(tag: &str) -> Option<Self> {
         let tag = tag.trim().to_ascii_lowercase();
         match tag.as_str() {
@@ -800,7 +802,11 @@ mod tests {
         assert_eq!(Language::from_evora(" EN "), Some(Language::En));
         assert_eq!(Language::from_evora("pt-br"), Some(Language::PtBr));
         assert_eq!(Language::from_evora("pt"), None, "no Portuguese variant chosen (D-23)");
-        for none in ["ar", "hi", "it", "ko", "tr", "zh-Hant", "", "xx"] {
+        // catalogs added upstream in v0.9.0
+        assert_eq!(Language::from_evora("it"), Some(Language::It));
+        assert_eq!(Language::from_evora("IT"), Some(Language::It));
+        assert_eq!(Language::from_evora("ko"), Some(Language::Ko));
+        for none in ["ar", "hi", "tr", "zh-Hant", "", "xx"] {
             assert_eq!(Language::from_evora(none), None, "{none}");
         }
         for l in Language::ALL {
