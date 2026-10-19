@@ -1,7 +1,7 @@
 # Evora fork: display override catalog ("catalogue de surcharge d'affichage", patches E10 and E9).
 # Columns, separated by a TAB:  language code <TAB> English source <TAB> text to display
 #
-#   language  en, es, fr, id, ja, pt-br, zh-cn, de, ru, uk (Language::code)
+#   language  en, es, fr, id, ja, pt-br, zh-cn, de, ru, uk, it, ko (Language::code)
 #   source    the English text the code asks for (tl!/tlf! literal, menu label, or a name the UI
 #             translates with i18n::t), exactly as in the code and the upstream catalogs
 #   display   what this build shows instead, in that language
@@ -22,6 +22,8 @@ id	✓ Enable	Aktifkan (nyala)
 ja	✓ Enable	有効（オン）
 pt-br	✓ Enable	Ativar (ativado)
 zh-cn	✓ Enable	启用（开）
+it	✓ Enable	Abilita (attivo)
+ko	✓ Enable	사용(켜짐)
 en	✔ same file	Same file
 es	✔ same file	Mismo archivo
 fr	✔ same file	Même fichier
@@ -29,6 +31,8 @@ id	✔ same file	Berkas sama
 ja	✔ same file	同じファイル
 pt-br	✔ same file	Mesmo arquivo
 zh-cn	✔ same file	同一文件
+it	✔ same file	Stesso file
+ko	✔ same file	같은 파일
 en	✔ matches	Matches
 es	✔ matches	Coincide
 fr	✔ matches	Correspond
@@ -36,6 +40,8 @@ id	✔ matches	Cocok
 ja	✔ matches	一致
 pt-br	✔ matches	Corresponde
 zh-cn	✔ matches	匹配
+it	✔ matches	Corrisponde
+ko	✔ matches	일치
 en	✖ different file	Different file
 es	✖ different file	Archivo distinto
 fr	✖ different file	Fichier différent
@@ -43,6 +49,8 @@ id	✖ different file	Berkas berbeda
 ja	✖ different file	別のファイル
 pt-br	✖ different file	Arquivo diferente
 zh-cn	✖ different file	不同文件
+it	✖ different file	File diverso
+ko	✖ different file	다른 파일
 
 # --- E9: neutral names instead of third-party product names (D-16, proposals pending review) -----
 # Lumetri (Adobe) → color grading. Every language whose upstream catalog translates the string has
@@ -56,6 +64,8 @@ id	Lumetri	Gradasi Warna
 ja	Lumetri	カラーグレーディング
 pt-br	Lumetri	Gradação de cor
 zh-cn	Lumetri	调色
+it	Lumetri	Gradazione colore
+ko	Lumetri	색보정
 en	Lumetri Color	Color Grading
 es	Lumetri Color	Etalonaje
 fr	Lumetri Color	Étalonnage
@@ -66,6 +76,8 @@ zh-cn	Lumetri Color	调色
 de	Lumetri Color	Farbgradierung
 ru	Lumetri Color	Цветокоррекция
 uk	Lumetri Color	Кольорокорекція
+it	Lumetri Color	Gradazione colore
+ko	Lumetri Color	색보정
 en	Lumetri Scopes	Video Scopes
 es	Lumetri Scopes	Ámbitos de video
 fr	Lumetri Scopes	Oscilloscopes vidéo
@@ -76,6 +88,8 @@ zh-cn	Lumetri Scopes	视频示波器
 de	Lumetri Scopes	Video-Scopes
 ru	Lumetri Scopes	Видеоскопы
 uk	Lumetri Scopes	Відеоскопи
+it	Lumetri Scopes	Ambiti video
+ko	Lumetri Scopes	비디오 스코프
 en	Lumetri Presets	Color Grading Presets
 es	Lumetri Presets	Ajustes preestablecidos de etalonaje
 fr	Lumetri Presets	Préréglages d'étalonnage
@@ -83,6 +97,8 @@ id	Lumetri Presets	Preset Gradasi Warna
 ja	Lumetri Presets	カラーグレーディングプリセット
 pt-br	Lumetri Presets	Predefinições de gradação de cor
 zh-cn	Lumetri Presets	调色预设
+it	Lumetri Presets	Predefiniti di gradazione colore
+ko	Lumetri Presets	색보정 사전 설정
 en	Add Lumetri Color to clip	Add Color Grading to clip
 es	Add Lumetri Color to clip	Añadir etalonaje al clip
 fr	Add Lumetri Color to clip	Ajouter l'effet Étalonnage au clip
@@ -90,6 +106,8 @@ id	Add Lumetri Color to clip	Tambahkan Gradasi Warna ke klip
 ja	Add Lumetri Color to clip	クリップにカラーグレーディングを追加
 pt-br	Add Lumetri Color to clip	Adicionar gradação de cor ao clipe
 zh-cn	Add Lumetri Color to clip	向剪辑添加调色
+it	Add Lumetri Color to clip	Aggiungi Gradazione colore alla clip
+ko	Add Lumetri Color to clip	클립에 색보정 추가
 en	For color management parameters, go to the Settings tab in the Lumetri Color panel.	For color management parameters, go to the Settings tab in the Color Grading panel.
 es	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para los parámetros de gestión del color, ve a la pestaña Ajustes del panel Etalonaje.
 fr	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Pour les paramètres de gestion des couleurs, accédez à l'onglet Paramètres du panneau Étalonnage.
@@ -97,6 +115,8 @@ id	For color management parameters, go to the Settings tab in the Lumetri Color 
 ja	For color management parameters, go to the Settings tab in the Lumetri Color panel.	カラーマネジメントのパラメーターは、カラーグレーディングパネルの「設定」タブにあります。
 pt-br	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Gradação de cor.
 zh-cn	For color management parameters, go to the Settings tab in the Lumetri Color panel.	有关色彩管理参数，请前往调色面板中的“设置”选项卡。
+it	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Per i parametri di gestione del colore, vai alla scheda Impostazioni del pannello Gradazione colore.
+ko	For color management parameters, go to the Settings tab in the Lumetri Color panel.	색상 관리 매개변수는 색보정 패널의 설정 탭에서 지정합니다.
 # Engine command and history labels, shown through i18n::t (keyboard shortcuts editor, History
 # panel); untranslated upstream, so English only.
 en	List Lumetri Presets	List Color Grading Presets
@@ -118,3 +138,5 @@ id	Opened {url}	Tautan eksternal tidak dibuka: {url}
 ja	Opened {url}	外部リンクは開きません: {url}
 pt-br	Opened {url}	Link externo não aberto: {url}
 zh-cn	Opened {url}	未打开外部链接：{url}
+it	Opened {url}	Collegamento esterno non aperto: {url}
+ko	Opened {url}	외부 링크를 열지 않음: {url}

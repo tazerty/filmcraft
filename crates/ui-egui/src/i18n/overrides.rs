@@ -63,6 +63,9 @@ mod tests {
             ("ru", include_str!("ru.tsv")),
             ("fr", include_str!("fr.tsv")),
             ("id", include_str!("id.tsv")),
+            // catalogs added upstream in v0.9.0 (D-19 upgrade, EVORA-COR-26)
+            ("it", include_str!("it.tsv")),
+            ("ko", include_str!("ko.tsv")),
         ]
     }
 
