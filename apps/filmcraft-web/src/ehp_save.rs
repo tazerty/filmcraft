@@ -143,6 +143,15 @@ fn write_export(st: &mut State, path: &str, data: &[u8]) -> Result<(), String> {
     fields.push(("mime", mime_for(&name).into()));
     fields.push(("bytes", buffer.clone().into()));
     let payload = object(&fields).ok_or_else(|| "couldn't build the message".to_string())?;
+    // `ui.activity` (A-28): an export job may start and end within one frame, before any tick sees
+    // it running; the activity is then announced here, before the file, and its end at the next tick
+    if st.has("ui.activity")
+        && st.last_busy != Some(true)
+        && let Some(activity) = object(&[("busy", true.into()), ("kind", "export".into())])
+        && ehp::send(st, "evora:activity", None, &activity, None).is_some()
+    {
+        st.last_busy = Some(true);
+    }
     let id = ehp::send(st, "evora:export", None, &payload, Some(&buffer)).ok_or_else(|| "couldn't send the file to Evora".to_string())?;
     st.exports.push((id, name));
     Ok(())

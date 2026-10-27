@@ -11,7 +11,9 @@
 //!   change, each command, and whenever the language or an enabled state changes (checked at most
 //!   every [`POLL_MS`]).
 //! - **`evora:command {command, params, confirmed?}`** runs a catalog command as its menu item does
-//!   (`menus::invoke`), and answers `evora:ack {ok: true, result}`. Outside the catalog (or unknown):
+//!   (`menus::invoke`; a destructive one Evora confirmed runs as the engine's command, without the
+//!   interface's own confirmation dialog), and answers `evora:ack {ok: true, result}`. Outside the
+//!   catalog (or unknown):
 //!   `capability`; destructive (work lost, nothing to undo) without `confirmed: true`: `forbidden`,
 //!   Evora asks the user first (D-24); disabled now: `busy`; failed: `invalid_content`.
 
@@ -175,7 +177,14 @@ pub fn on_command(id: String, p: &JsValue) {
             ack(&id, false, Some("busy"));
             return;
         }
-        match filmcraft_ui_egui::menus::invoke(&mut w.app, ctx, &command, params) {
+        // a destructive command Evora confirmed (D-24) runs without the interface's own confirmation
+        // dialog (never two confirmations): the engine's command when there is one
+        let run = if confirmed && destructive(&command) && filmcraft_engine::find_command(&command).is_some() {
+            w.app.session.execute(&command, params).map_err(|e| e.to_string())
+        } else {
+            filmcraft_ui_egui::menus::invoke(&mut w.app, ctx, &command, params)
+        };
+        match run {
             Ok(result) => crate::ehp::ack_result(&id, &result),
             Err(e) => {
                 log::warn!("Evora command {command}: {e}");

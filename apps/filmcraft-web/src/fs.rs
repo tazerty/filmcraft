@@ -356,7 +356,7 @@ fn fetch_remote_chunk(id: u32, c: u64, url: String, size: u64) {
         }
         match crate::remote::get_range(&url, a, b - 1).await {
             Ok(reply) => chunk_arrived(id, c, Ok(reply.bytes)),
-            Err(crate::remote::RangeError::Expired) => url_expired(id, c),
+            Err(crate::remote::RangeError::Expired) => url_expired(id, c, &url),
             Err(crate::remote::RangeError::Other(e)) => chunk_arrived(id, c, Err(e)),
         }
     });
@@ -389,13 +389,14 @@ fn chunk_arrived(id: u32, c: u64, r: Result<Vec<u8>, String>) {
     }
 }
 
-/// Evora fork (COR-FK-B1): the signed URL of remote entry `id` expired: chunk `c` waits, unfailed,
-/// and the shell is asked once for a new URL (`evora:need`, HOST-PROTOCOL §7.5).
-fn url_expired(id: u32, c: u64) {
+/// Evora fork (COR-FK-B1): the signed URL `url` of remote entry `id` expired: chunk `c` waits,
+/// unfailed, and the shell is asked once for a new URL (`evora:need`, HOST-PROTOCOL §7.5). A late
+/// answer to a URL already renewed changes nothing: the chunk is fetched again with the new one.
+fn url_expired(id: u32, c: u64, url: &str) {
     let path = FS.with(|fs| {
         let mut fs = fs.borrow_mut();
         fs.inflight.remove(&(id, c));
-        let remote = fs.remotes.get_mut(&id)?;
+        let remote = fs.remotes.get_mut(&id).filter(|r| r.url == url)?;
         let first = !remote.expired;
         remote.expired = true;
         first.then(|| remote.path.clone())
