@@ -1507,18 +1507,21 @@ try {
       const job = await exec("file.exportMedia", { format: "wav", path: "/exports/evora-mix.wav" });
       let renewed = null;
       let exp = null;
+      const answered = new Set();
       for (const until = Date.now() + 120000; Date.now() < until && !exp; ) {
         const log = await getLog();
-        const nn = ofType(log, "evora:need");
-        if (!renewed && nn.length > nNeed) {
-          renewed = nn.at(-1);
-          await answerNeed(renewed, () => "ok");
+        // chaque renouvellement reçoit sa nouvelle URL (le premier est jugé)
+        for (const nd of ofType(log, "evora:need").slice(nNeed)) {
+          if (answered.has(nd.id)) continue;
+          answered.add(nd.id);
+          renewed = renewed ?? nd;
+          await answerNeed(nd, () => "ok");
         }
         exp = ofType(log, "evora:export").find((m) => m.payload?.name === "evora-mix.wav") ?? null;
         if (!exp) await sleep(500);
       }
       if (exp) await send(await msg("evora:ack", { ok: true }, { re: exp.id }));
-      r.renew = { job: typeof job === "string" ? job : "ok", paths: renewed?.payload?.paths ?? null, export: exp ? { name: exp.payload?.name, mime: exp.payload?.mime, bytes: exp.payload?.bytes?.arrayBuffer ?? null, docRef: exp.payload?.docRef } : null };
+      r.renew = { job: typeof job === "string" ? job : "ok", renewals: answered.size, paths: renewed?.payload?.paths ?? null, export: exp ? { name: exp.payload?.name, mime: exp.payload?.mime, bytes: exp.payload?.bytes?.arrayBuffer ?? null, docRef: exp.payload?.docRef } : null };
       if (!renewed || JSON.stringify(renewed.payload?.paths) !== JSON.stringify(["/files/clip-c.wav"]) || !exp || exp.payload?.mime !== "audio/wav" ||
         !(exp.payload?.bytes?.arrayBuffer > 44) || exp.payload?.docRef !== RM) {
         flag("S-MED-RENEW", JSON.stringify(r.renew));
