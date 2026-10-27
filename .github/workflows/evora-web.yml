@@ -15,7 +15,9 @@
 # contre un témoin sabordé qui doit être déclaré rouge) et le correctif E5 (espace de noms par
 # evora:init seulement, purges). Porte evora-host.json : livré vide (pont muet), sans .br ni .gz.
 # Sorties : evora-corte-web-<tag>.zip (site, .br/.gz, LICENSES/, csp-hashes.txt, evora-host.json vide),
-# SHA256SUMS, csp-hashes.txt. L'artefact au nom Evora n'est publié que par le job final
+# SHA256SUMS, csp-hashes.txt, commands.json (COR-FK-B1 : catalogue des commandes émis par le moteur au
+# scénario pont-v1, anglais, trié, avec son empreinte, que le provisionnement d'Evora copie dans
+# engines.json). L'artefact au nom Evora n'est publié que par le job final
 # « publication », qui attend le job web (portes, fumée) ET le job tests : un run rouge, quel que soit
 # le job en échec, ne publie jamais d'artefact au nom Evora. Le job web ne transmet qu'une archive
 # interne, au nom non publiable, gardée un jour.
@@ -336,7 +338,8 @@ jobs:
           node --version
           google-chrome --version
           node .github/evora/smoke.mjs --site "$x/$NAME" --csp "$x/$NAME/csp-hashes.txt" --out "$RUNNER_TEMP/fumee" \
-            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --storage-checks --theme-checks --ehp-checks
+            --chrome google-chrome --emoji "$EVORA_EMOJI_GATE" --terms "$EVORA_TERMS_GATE" --lang-checks --storage-checks --theme-checks --ehp-checks \
+            --commands "$GITHUB_WORKSPACE/dist/evora/commands.json"
 
       - name: Diagnostic du test de fumée
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
@@ -353,7 +356,8 @@ jobs:
           NAME: ${{ steps.meta.outputs.name }}
         run: |
           cd dist/evora
-          sha256sum "$NAME.zip" csp-hashes.txt > SHA256SUMS
+          [ -s commands.json ] || { echo "::error::commands.json absent (scénario pont-v1 de la fumée)"; exit 1; }
+          sha256sum "$NAME.zip" csp-hashes.txt commands.json > SHA256SUMS
           cat SHA256SUMS
           { echo "### SHA256SUMS"; echo; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -365,6 +369,7 @@ jobs:
             dist/evora/${{ steps.meta.outputs.name }}.zip
             dist/evora/SHA256SUMS
             dist/evora/csp-hashes.txt
+            dist/evora/commands.json
           if-no-files-found: error
           retention-days: 1
 
@@ -418,7 +423,7 @@ jobs:
         shell: bash
         # Depuis la v0.13.0, les tests d'interface d'ui-egui forment un seul binaire (`tests/it/`) :
         # seul le module links_ui y est joué.
-        run: cargo test --locked -p filmcraft-ui-egui --test it -- links_ui::
+        run: "cargo test --locked -p filmcraft-ui-egui --test it -- links_ui::"
 
   publish:
     name: Publication (artefact au nom Evora, portes et tests verts)
@@ -451,7 +456,8 @@ jobs:
           [[ "$NAME" =~ ^evora-corte-web-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::nom d'archive inattendu « $NAME »"; exit 1; }
           ls -l
           cat SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 2 ] || { echo "::error::SHA256SUMS doit porter 2 lignes"; exit 1; }
+          [ "$(wc -l < SHA256SUMS)" -eq 3 ] || { echo "::error::SHA256SUMS doit porter 3 lignes"; exit 1; }
+          grep -q "  commands.json\$" SHA256SUMS || { echo "::error::commands.json absent de SHA256SUMS"; exit 1; }
           grep -q "  $NAME.zip\$" SHA256SUMS || { echo "::error::$NAME.zip absent de SHA256SUMS"; exit 1; }
           sha256sum -c SHA256SUMS
 
@@ -464,6 +470,7 @@ jobs:
             dist/evora/${{ needs.web.outputs.name }}.zip
             dist/evora/SHA256SUMS
             dist/evora/csp-hashes.txt
+            dist/evora/commands.json
           if-no-files-found: error
 
       - name: Empreinte de l'artefact

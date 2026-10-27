@@ -16,6 +16,7 @@
 // Au rendu : libellés de menus dans chaque langue du moteur (émojis E10, termes sensibles E9).
 // Sortie : rapport JSON et capture d'écran dans --out ; code 1 si une vérification échoue.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ const arg = (k, d) => {
 // Arguments : un argument inconnu ou sans sa valeur arrête la fumée (code 2), et chaque famille de
 // contrôles est exigée : un drapeau retiré ou renommé dans le workflow ne saute plus une famille en
 // silence (« non vérifié » avec un verdict vert).
-const VALUED = ["site", "csp", "out", "chrome", "emoji", "terms", "timeout"];
+const VALUED = ["site", "csp", "out", "chrome", "emoji", "terms", "timeout", "commands"];
 const FAMILIES = ["lang-checks", "storage-checks", "theme-checks", "ehp-checks"];
 for (let i = 2; i < process.argv.length; i++) {
   const k = process.argv[i].startsWith("--") ? process.argv[i].slice(2) : null;
@@ -54,6 +55,8 @@ const langChecks = process.argv.includes("--lang-checks");
 const storageChecks = process.argv.includes("--storage-checks");
 const ehpChecks = process.argv.includes("--ehp-checks");
 const themeChecks = process.argv.includes("--theme-checks");
+// COR-FK-B1 : catalogue des commandes du moteur (evora:commands, anglais), écrit pour l'artefact
+const commandsOut = arg("commands", "");
 if (!existsSync(join(site, "index.html"))) {
   console.error(`::error::index.html introuvable dans ${site}`);
   process.exit(2);
@@ -95,6 +98,66 @@ if (hashes.length === 0) {
 
 let parentOrigin = "";
 let intruderOrigin = "";
+
+// COR-FK-B1 : média de fumée (WAV PCM 16 bits mono, 48 kHz, 30 s : trois blocs de lecture de 1 Mio),
+// servi par le moteur (import hors pont) et par la parente, qui joue Drive : /__media/<nom>.wav?t=<jeton>,
+// une seule plage bornée, CORS limité à l'origine du moteur, Content-Range exposé, latence injectée ;
+// jeton x403 : la sonde bytes=0-0 passe, toute autre lecture répond 403 (URL expirée). Chaque requête
+// est journalisée (méthode, plage, origine, cookie).
+const wav = (seconds, rate = 48000) => {
+  const n = Math.round(seconds * rate);
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000), i * 2);
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0); h.writeUInt32LE(36 + data.length, 4); h.write("WAVE", 8); h.write("fmt ", 12); h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+};
+const MEDIA_WAV = wav(30);
+const MEDIA_NAMES = /^\/__media\/(clip-[abc]|pick-a|drop-a|temoin-suffixe|temoin-include)\.wav$/;
+const MEDIA_LATENCY_MS = 400;
+const mediaLog = [];
+const downloadEvents = [];
+
+// COR-FK-B1 : espion posé sur chaque document du moteur (scénario pont-v1) : sélecteurs du navigateur
+// et téléchargements par ancre comptés (jamais ouverts), et, sous ?wgfail sans ?webgl, un WebGPU dont
+// le périphérique ne se crée pas (le moteur doit se recharger en ?webgl en gardant host=evora).
+const SPY_JS = `(() => {
+  const S = (window.__spy = { picker: 0, download: 0 });
+  if (window.showOpenFilePicker) window.showOpenFilePicker = function () { S.picker++; return Promise.reject(new DOMException("espion", "AbortError")); };
+  const click = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () { if (this.type === "file") { S.picker++; return; } return click.call(this); };
+  const aclick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () { if (this.hasAttribute("download")) { S.download++; return; } return aclick.call(this); };
+  const q = new URLSearchParams(location.search);
+  if (q.has("wgfail") && !q.has("webgl") && navigator.gpu) {
+    const ra = navigator.gpu.requestAdapter.bind(navigator.gpu);
+    navigator.gpu.requestAdapter = async (...a) => { const ad = await ra(...a); if (ad) ad.requestDevice = () => Promise.reject(new Error("requestDevice failed (fumée Evora : repli WebGL)")); return ad; };
+  }
+})();`;
+
+function serveMedia(req, res, url) {
+  const entry = { t: Date.now(), method: req.method, path: url.pathname, token: url.searchParams.get("t"), range: req.headers.range ?? null,
+    origin: req.headers.origin ?? null, cookie: req.headers.cookie ?? null, status: 0 };
+  mediaLog.push(entry);
+  const cors = { "Access-Control-Allow-Origin": engineOrigin, Vary: "Origin", "Access-Control-Expose-Headers": "Content-Range, Content-Length",
+    "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
+  const reply = (status, headers, body) => {
+    entry.status = status;
+    setTimeout(() => { res.writeHead(status, { ...cors, ...headers }); res.end(body); }, MEDIA_LATENCY_MS);
+  };
+  if (!MEDIA_NAMES.test(url.pathname)) return reply(404, { "Content-Type": "text/plain" }, "not found");
+  if (req.method === "OPTIONS") return reply(204, { "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "range", "Access-Control-Max-Age": "0" }, "");
+  if (req.method !== "GET") return reply(405, {}, "");
+  const m = /^bytes=(\d+)-(\d*)$/.exec(entry.range ?? "");
+  if (!m) return reply(416, { "Content-Range": `bytes */${MEDIA_WAV.length}` }, "");
+  const a = Number(m[1]);
+  const b = m[2] === "" ? MEDIA_WAV.length - 1 : Math.min(Number(m[2]), MEDIA_WAV.length - 1);
+  if (entry.token === "x403" && !(a === 0 && b === 0)) return reply(403, { "Content-Type": "text/plain" }, "expired");
+  if (a > b) return reply(416, { "Content-Range": `bytes */${MEDIA_WAV.length}` }, "");
+  return reply(206, { "Content-Type": "audio/wav", "Content-Range": `bytes ${a}-${b}/${MEDIA_WAV.length}`, "Content-Length": String(b - a + 1) }, MEDIA_WAV.subarray(a, b + 1));
+}
 // E4 : ce que le provisionnement d'Evora écrit dans evora-host.json à côté d'index.html. null : le
 // fichier de l'archive est servi tel quel (livré vide : le pont doit rester muet).
 let hostConfig = null;
@@ -193,6 +256,7 @@ const HARNESS_JS = `(() => {
   let n = 0;
   const ulid = () => { n += 1; let t = Date.now(), s = ""; for (let i = 0; i < 10; i++) { s = A[t % 32] + s; t = Math.floor(t / 32); } let c = n, r = ""; for (let i = 0; i < 6; i++) { r = A[c % 32] + r; c = Math.floor(c / 32); } for (let i = 0; i < 10; i++) r += A[Math.floor(Math.random() * 32)]; return s + r; };
   const describe = (v) => {
+    if (typeof File !== "undefined" && v instanceof File) return { file: v.name, size: v.size, type: v.type };
     if (v instanceof ArrayBuffer) { let format = null; try { format = JSON.parse(new TextDecoder().decode(v)).format ?? null; } catch (e) {} return { arrayBuffer: v.byteLength, format }; }
     if (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer) return { sharedArrayBuffer: v.byteLength };
     if (ArrayBuffer.isView(v)) return { view: v.constructor.name };
@@ -265,7 +329,8 @@ function engineCsp() {
     "default-src 'self'",
     `script-src 'self' 'wasm-unsafe-eval' ${hashes.join(" ")}`,
     "worker-src 'self' blob:",
-    "connect-src 'self'",
+    // COR-FK-B1 : les médias de Drive, par URL signée, sous un seul chemin (comme le vhost de production)
+    `connect-src 'self' ${parentOrigin}/__media/`,
     "img-src 'self' data: blob:",
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self' data:",
@@ -277,6 +342,12 @@ function engineCsp() {
 
 const engine = createServer((req, res) => {
   const url = new URL(req.url, "http://x");
+  if (MEDIA_NAMES.test(url.pathname)) {
+    report.requests.push({ origin: "A", path: url.pathname, status: 200 });
+    res.writeHead(200, { "Content-Type": "audio/wav", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end(MEDIA_WAV);
+    return;
+  }
   const memory = {
     "/__temoin/index.html": [TEMOIN_HTML, ".html"],
     "/__temoin/temoin.js": [TEMOIN_JS, ".js"],
@@ -303,6 +374,7 @@ const engine = createServer((req, res) => {
 let engineOrigin = "";
 const parent = createServer((req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname.startsWith("/__media/")) return serveMedia(req, res, url);
   const pages = {
     "/": "parent",
     "/ehp-harness.js": "harness",
@@ -509,6 +581,9 @@ try {
         } else if (p.type === "warning") {
           events.push({ role, gen, kind: "console.warn", text: p.args.map((a) => a.value ?? a.description ?? "").join(" ") });
         }
+        break;
+      case "Browser.downloadWillBegin":
+        downloadEvents.push({ url: p.url, name: p.suggestedFilename });
         break;
       case "Log.entryAdded":
         events.push({ role, gen, kind: `log.${p.entry.level}`, source: p.entry.source, text: p.entry.text + (p.entry.url ? ` (${p.entry.url})` : "") });
@@ -775,7 +850,10 @@ try {
   if (ehpChecks) {
     const NS = "0123456789abcdef".repeat(4);
     const OTHER = "fedcba9876543210".repeat(4);
-    const EXPECTED_CAPS = ["doc.dirty", "doc.open", "doc.request-save", "doc.save", "live.lang", "live.theme", "storage.ns", "storage.purge"];
+    // COR-FK-B1 : 18 capacités (accusé, export, médias, sélecteur, commandes et catalogue, sortie
+    // clavier, activité, dépôt) ; la v0.9.0 en déclarait 8
+    const EXPECTED_CAPS = ["command", "command.catalog", "doc.dirty", "doc.open", "doc.request-save", "doc.save", "doc.saved-ack", "drop.files",
+      "export.drive", "live.lang", "live.theme", "media.need", "media.ranges", "pick.drive", "storage.ns", "storage.purge", "ui.activity", "ui.focus-out"];
     const VOCAB = ["doc.open", "doc.save", "doc.saved-ack", "doc.dirty", "doc.multi", "doc.request-save", "export.drive", "media.need", "media.ranges",
       "pick.drive", "command", "storage.ns", "storage.memory", "storage.purge", "live.lang", "live.theme", "font.inject", "author"];
     const ACK_CODES = ["clean", "cancelled", "conflict", "too_large", "quota", "forbidden", "not_found", "invalid_content", "unsupported",
@@ -1064,6 +1142,14 @@ try {
         else if (m.type === "evora:dirty") ok = ok && !m.hasRe && sub(["dirty", "docRef"]) && typeof p.dirty === "boolean" && (p.docRef === undefined || ULID.test(p.docRef));
         else if (m.type === "evora:save") ok = ok && sub(["docRef", "name", "saveAs", "bytes"]) && k.length === 4 && ULID.test(String(p.docRef)) && p.bytes?.arrayBuffer >= 1;
         else if (m.type === "evora:ready") ok = ok && !m.hasRe;
+        // COR-FK-B1 : messages du pont V1 (catalogue, besoin, sélecteur, export, activité, sortie, dépôt)
+        else if (m.type === "evora:commands") ok = ok && !m.hasRe && k.length === 1 && k[0] === "commands" && Array.isArray(p.commands);
+        else if (m.type === "evora:need") ok = ok && !m.hasRe && k.length === 2 && sub(["docRef", "paths"]) && ULID.test(String(p.docRef)) && Array.isArray(p.paths);
+        else if (m.type === "evora:pick") ok = ok && !m.hasRe && sub(["purpose", "accept", "multiple", "forPath"]) && ["open", "import", "relink"].includes(p.purpose);
+        else if (m.type === "evora:export") ok = ok && !m.hasRe && sub(["docRef", "name", "mime", "bytes"]) && p.bytes?.arrayBuffer >= 1;
+        else if (m.type === "evora:activity") ok = ok && !m.hasRe && k.length === 2 && sub(["busy", "kind"]) && typeof p.busy === "boolean";
+        else if (m.type === "evora:focus-out") ok = ok && !m.hasRe && k.length === 0;
+        else if (m.type === "evora:drop") ok = ok && !m.hasRe && k.length === 2 && sub(["purpose", "files"]) && p.purpose === "import";
         else if (m.type === "evora:failed") ok = ok && FAIL_CODES.includes(p.code);
         else ok = false;
         if (!ok) flag("ENVELOPPE", `message hors norme : ${JSON.stringify(m).slice(0, 300)}`);
@@ -1158,6 +1244,455 @@ try {
     const missed = mustFlag.filter((t) => !tags.includes(t));
     if (missed.length) fail(`E4 [EHP-TEMOIN] le banc n'a pas rougi contre le témoin sabordé sur : ${missed.join(", ")} (relevé : ${tags.join(", ")})`);
     hostConfig = null;
+
+    // E4 (COR-FK-B1) : pont V1 (scénario « pont-v1 »), joué contre le moteur seul. Détecteurs : S-ACK
+    // (accusé d'enregistrement), COMMANDS-CATALOG, COMMAND-ALLOWED, COMMAND-REFUSED, FOCUS-OUT,
+    // SAVE-AS-ADOPT, S-MED (besoins par lots, URL signées lues par plages), S-MED-RENEW (URL expirée
+    // renouvelée), ACTIVITY-EXPORT, S-EXP, S-PICK (sélecteur de la coquille, latence injectée),
+    // S-PICK-SUFFIXE, S-PICK-INCLUDE, S-PICK-LOCAL, S-DROP, WEBGL-KEEPS-HOST, WRITE-NEW,
+    // TELECHARGEMENT. Le témoin groupé de la livraison (commit EVORA-COR-NN « témoin », retiré à
+    // l'octet) en rougit un ensemble prédit, exact ; les autres restent verts.
+    async function pontV1() {
+      const bad = [];
+      const flag = (tag, text) => bad.push({ tag, text });
+      const r = {};
+      const BIG = 16 << 20;
+      const V1_CAPS = [...EXPECTED_CAPS];
+      const MEDIA_PATHS = ["/files/clip-a.wav", "/files/clip-b.wav", "/files/clip-c.wav"];
+      const sortedKeys = (m) => JSON.stringify([...(m?.payloadKeys ?? [])].sort());
+      const inspect = () => exec("project.inspect");
+      const invoke = (id) => inChild(`filmcraft.request("ui.menu.invoke", { id: ${JSON.stringify(id)} }).then(() => true, (e) => "erreur : " + e.message)`).catch((e) => String(e));
+      const ofType = (log, type) => fromEngine(log).filter((m) => m.type === type);
+      const count = async (type) => ofType(await getLog(), type).length;
+      const next = (type, n, ms) => waitFor((log) => { const l = ofType(log, type); return l.length > n ? l.at(-1) : null; }, ms);
+      const lastDirty = (log, ref) => ofType(log, "evora:dirty").filter((m) => m.payload?.docRef === ref).at(-1)?.payload?.dirty;
+      const dirtyIs = (ref, v, ms) => waitFor((log) => lastDirty(log, ref) === v, ms);
+      const requestSave = async (reason, docRef) => waitFor(answer(await send(await msg("evora:request-save", docRef ? { reason, docRef } : { reason }))), 15000);
+      const command = async (c, params = {}, extra = {}) => waitFor(answer(await send(await msg("evora:command", { command: c, params, ...extra })), "evora:ack"), 15000);
+      const itemsOf = (bin, bins, items) => {
+        for (const c of bin?.children ?? []) {
+          if (Array.isArray(c.children)) { bins.push(c.name); itemsOf(c, bins, items); } else items.push(c.name);
+        }
+        return { bins, items };
+      };
+      const tree = async () => itemsOf((await inspect())?.root, [], []);
+      const b64 = (v) => Buffer.from(String(v), "base64");
+      const spyCounts = { picker: 0, download: 0 };
+      const readSpy = async () => {
+        const sp = await inChild("window.__spy ? { picker: window.__spy.picker, download: window.__spy.download } : null").catch(() => null);
+        if (sp) {
+          spyCounts.picker += sp.picker;
+          spyCounts.download += sp.download;
+          await inChild("(window.__spy.picker = 0, window.__spy.download = 0, true)").catch(() => {});
+        }
+        return sp;
+      };
+      // comme la coquille (§7.1, étape 5) : l'ensemble effectif est l'intersection de ce que le moteur
+      // annonce et de ce que la configuration admet
+      const initWith = async (ready, caps, extraLimits = {}) => {
+        const announced = Array.isArray(ready.payload?.capabilities) ? ready.payload.capabilities : [];
+        const init = await send(await msg("evora:init", { lang: "en", engineLang: "en", theme: "dark", accent: "#4F46E5", readOnly: false, storageNs: NS,
+          capabilities: caps.filter((c) => announced.includes(c)), prefs: {}, limits: { maxDocumentBytes: BIG, maxExportBytes: BIG, ...extraLimits } }, { re: ready.id }));
+        return waitFor(answer(init, "evora:ack"), 30000);
+      };
+      const start = async (query, caps = V1_CAPS, extraLimits = {}) => {
+        await readSpy();
+        await inParent("window.__ehp.clear()");
+        const l = await reload(query);
+        const ready = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:ready"), 20000);
+        if (!l?.readyMs || !ready) { flag("DEMARRAGE", `${query} : ${JSON.stringify(l)}`); return null; }
+        const ack = await initWith(ready, caps, extraLimits);
+        if (ack?.payload?.ok !== true) { flag("INIT", `${query} : ${JSON.stringify(ack)}`); return null; }
+        return ready;
+      };
+      const openDoc = async (docRef, name, bytes) => waitFor(answer(await send(await msg("evora:open", { docRef, name }), bytes), "evora:ack"), 20000);
+      hostConfig = { parentOrigins: [parentOrigin] };
+      await cdp.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: mkdtempSync(join(tmpdir(), "evora-dl-")), eventsEnabled: true }).catch(() => {});
+      const spy = await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: SPY_JS }, childSession).catch((e) => ({ error: String(e) }));
+      if (!spy?.identifier) { flag("PREMISSE", `espion non posé : ${JSON.stringify(spy)}`); return { bad, r }; }
+
+      // 0. projet « médias » (hors pont) : trois WAV de l'origine du moteur importés, une séquence
+      await reload("empty&norecover&fixture-medias");
+      const imported = [];
+      for (const n of ["clip-a", "clip-b", "clip-c"]) {
+        imported.push(await inChild(`filmcraft.importUrl("/__media/${n}.wav").then((v) => (v.items && v.items.length ? v.items[0] : "aucun"), (e) => "erreur : " + e.message)`).catch((e) => String(e)));
+      }
+      const seq = await exec("file.newSequence", { fromItems: imported, name: "S-medias" });
+      await exec("file.saveCopy", { path: "/opfs/evora-lab/medias.fcproj" });
+      const mediaFixture = await inChild("filmcraft.readFile('/opfs/evora-lab/medias.fcproj').then((u) => { let s = ''; for (const b of u) s += String.fromCharCode(b); return btoa(s); }, (e) => 'erreur : ' + e)").catch((e) => String(e));
+      let mediaFormat = null;
+      try { mediaFormat = JSON.parse(b64(mediaFixture).toString("utf-8")).format; } catch {}
+      r.mediaFixture = { imported, seq: typeof seq === "string" ? seq : "ok", format: mediaFormat, bytes: b64(mediaFixture).length };
+      if (!imported.every((i) => typeof i === "number") || mediaFormat !== "filmcraft.project" || !MEDIA_PATHS.every((p) => b64(mediaFixture).toString("utf-8").includes(p))) {
+        flag("PREMISSE", `projet « médias » : ${JSON.stringify(r.mediaFixture)}`);
+      }
+
+      // 1. mode hôte, toutes les capacités : le catalogue suit l'accusé d'evora:init
+      let ready = await start("host=evora&lang=en&theme=dark&v1");
+      if (!ready) return { bad, r };
+      r.version = ready.payload?.version ?? null;
+      const KEYS = JSON.stringify(["destructive", "enabled", "id", "label", "menu", "params"]);
+      const checkCatalog = (m, where) => {
+        const list = m?.payload?.commands;
+        if (!m || sortedKeys(m) !== '["commands"]' || !Array.isArray(list) || list.length < 50) {
+          flag("COMMANDS-CATALOG", `${where} : catalogue absent ou court (${Array.isArray(list) ? list.length : "?"})`);
+          return null;
+        }
+        const ids = new Set();
+        for (const c of list) {
+          const ok = c && JSON.stringify(Object.keys(c).sort()) === KEYS && /^[a-z][A-Za-z0-9_.-]*$/.test(String(c.id)) && typeof c.label === "string" && c.label.length > 0 &&
+            Array.isArray(c.menu) && c.menu.every((x) => typeof x === "string") && typeof c.params === "string" && typeof c.enabled === "boolean" && typeof c.destructive === "boolean" && !ids.has(c.id);
+          ids.add(c.id);
+          if (!ok) { flag("COMMANDS-CATALOG", `${where} : entrée hors norme ${JSON.stringify(c).slice(0, 200)}`); return null; }
+        }
+        const owned = list.filter((c) => /^(app|help|prefs|voiceover)\./.test(c.id) || ["file.open", "file.save", "file.saveAs", "file.saveCopy", "file.newProject"].includes(c.id)).map((c) => c.id);
+        if (owned.length) flag("COMMANDS-CATALOG", `${where} : commandes de la coquille listées ${JSON.stringify(owned.slice(0, 8))}`);
+        const by = Object.fromEntries(list.map((c) => [c.id, c]));
+        if (by["file.newBin"]?.destructive !== false || by["file.newSequence"]?.destructive !== false) flag("COMMANDS-CATALOG", `${where} : file.newBin ${JSON.stringify(by["file.newBin"])}`);
+        if (by["file.revert"]?.destructive !== true) flag("COMMANDS-CATALOG", `${where} : file.revert ${JSON.stringify(by["file.revert"])}`);
+        return by;
+      };
+      const cat1 = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:commands"), 10000);
+      const by1 = checkCatalog(cat1, "en");
+      r.catalog = { commands: cat1?.payload?.commands?.length ?? null };
+
+      // 2. S-ACK : le projet n'est enregistré qu'à l'accusé ; modifié pendant l'envoi, il le reste ;
+      //    refusé (409), il le reste ; rouvert (même docRef), il est propre
+      const RA = await ulid();
+      const openA = await openDoc(RA, "temoin-ack.fcproj", String(fixture));
+      if (openA?.payload?.ok !== true) flag("S-ACK", `ouverture : ${JSON.stringify(openA)}`);
+      await exec("file.newSequence", { name: "ack-1" });
+      if (!(await dirtyIs(RA, true, 10000))) flag("S-ACK", "aucune modification signalée (ack-1)");
+      let save = await requestSave("user");
+      const n0 = fromEngine(await getLog()).length;
+      await sleep(1500);
+      let pr = await inspect();
+      const early = fromEngine(await getLog()).slice(n0).some((m) => m.type === "evora:dirty" && m.payload?.docRef === RA && m.payload?.dirty === false);
+      r.ack1 = { save: save?.type ?? null, dirty: pr?.dirty, early };
+      if (save?.type !== "evora:save" || pr?.dirty !== true || early) flag("S-ACK", `enregistré avant l'accusé : ${JSON.stringify(r.ack1)}`);
+      if (save?.type === "evora:save") await send(await msg("evora:saved", { ok: true, version: 2 }, { re: save.id }));
+      const cleanA = await dirtyIs(RA, false, 10000);
+      pr = await inspect();
+      if (!cleanA || pr?.dirty !== false) flag("S-ACK", `accusé positif sans effet : ${JSON.stringify({ cleanA, dirty: pr?.dirty })}`);
+      await exec("file.newSequence", { name: "ack-2" });
+      await dirtyIs(RA, true, 10000);
+      save = await requestSave("autosave");
+      await exec("file.newSequence", { name: "ack-3" });
+      if (save?.type === "evora:save") await send(await msg("evora:saved", { ok: true, version: 3 }, { re: save.id }));
+      await sleep(2000);
+      pr = await inspect();
+      r.ack2 = { save: save?.type ?? null, dirty: pr?.dirty, last: lastDirty(await getLog(), RA) };
+      if (save?.type !== "evora:save" || pr?.dirty !== true || r.ack2.last !== true) flag("S-ACK", `modification pendant l'envoi perdue : ${JSON.stringify(r.ack2)}`);
+      save = await requestSave("user");
+      if (save?.type === "evora:save") await send(await msg("evora:saved", { ok: false, error: "conflict" }, { re: save.id }));
+      await sleep(1500);
+      pr = await inspect();
+      r.ack409 = { save: save?.type ?? null, dirty: pr?.dirty };
+      if (save?.type !== "evora:save" || pr?.dirty !== true) flag("S-ACK", `refus 409 : ${JSON.stringify(r.ack409)}`);
+      const reopen = await openDoc(RA, "temoin-ack.fcproj", String(fixture));
+      const cleanReopen = await dirtyIs(RA, false, 10000);
+      pr = await inspect();
+      r.reopen = { ack: reopen?.payload ?? null, dirty: pr?.dirty };
+      if (reopen?.payload?.ok !== true || !cleanReopen || pr?.dirty !== false) flag("S-ACK", `rouvert après le 409 : ${JSON.stringify(r.reopen)}`);
+
+      // 3. commandes : admise, refusées (hors catalogue, inconnue, destructive sans accord), confirmée
+      const allowed = await command("file.newBin", { name: "Evora-commande" });
+      const t1 = await tree();
+      r.commandAllowed = { ack: allowed?.payload ?? null, bins: t1.bins };
+      if (allowed?.payload?.ok !== true || !t1.bins.includes("Evora-commande")) flag("COMMAND-ALLOWED", JSON.stringify(r.commandAllowed));
+      const refused = {};
+      for (const [k, c, params] of [["lien", "help.github", {}], ["fichier", "file.open", { path: "/evora/x.fcproj" }], ["inconnue", "pas.une.commande", {}], ["destructive", "file.revert", {}]]) {
+        refused[k] = (await command(c, params))?.payload ?? null;
+      }
+      const t2 = await tree();
+      r.commandRefused = { ...refused, kept: t2.bins.includes("Evora-commande") };
+      if (refused.lien?.ok !== false || refused.lien?.code !== "capability" || refused.fichier?.code !== "capability" || refused.inconnue?.code !== "capability" ||
+        refused.destructive?.ok !== false || refused.destructive?.code !== "forbidden" || !r.commandRefused.kept) {
+        flag("COMMAND-REFUSED", JSON.stringify(r.commandRefused));
+      }
+      const xs = await send(await msg("evora:command", { command: "file.newBin", params: {}, extra: 1 }));
+      const confirmed = await command("file.revert", {}, { confirmed: true });
+      await sleep(1000);
+      const t3 = await tree();
+      r.commandConfirmed = { ack: confirmed?.payload ?? null, kept: t3.bins.includes("Evora-commande"), outOfSchema: fromEngine(await getLog()).some((m) => m.re === xs) };
+      if (confirmed?.payload?.ok !== true || r.commandConfirmed.kept) flag("COMMAND-ALLOWED", `commande destructive confirmée : ${JSON.stringify(r.commandConfirmed)}`);
+      if (r.commandConfirmed.outOfSchema) flag("COMMAND-REFUSED", "réponse à un evora:command hors schéma");
+
+      // 4. catalogue dans la langue servie (evora:lang es), puis retour à l'anglais
+      const nCat = await count("evora:commands");
+      const la = await send(await msg("evora:lang", { lang: "es", engineLang: "es" }));
+      await waitFor(answer(la, "evora:ack"), 10000);
+      const cat2 = await next("evora:commands", nCat, 10000);
+      await sleep(500);
+      const menuEs = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+      const esLabel = (Array.isArray(menuEs) ? menuEs : []).find((m) => m.id === "file.newSequence")?.label ?? null;
+      const by2 = cat2 ? checkCatalog(cat2, "es") : null;
+      r.catalogEs = { catalog: by2?.["file.newSequence"]?.label ?? null, menu: esLabel, en: by1?.["file.newSequence"]?.label ?? null };
+      if (!cat2 || !esLabel || r.catalogEs.catalog !== esLabel || r.catalogEs.catalog === r.catalogEs.en) flag("COMMANDS-CATALOG", `après evora:lang es : ${JSON.stringify(r.catalogEs)}`);
+      const lb = await send(await msg("evora:lang", { lang: "en", engineLang: "en" }));
+      await waitFor(answer(lb, "evora:ack"), 10000);
+
+      // 5. sortie clavier : F6 seule rend le focus (une fois), Ctrl+F6 non
+      const nFo = await count("evora:focus-out");
+      await inChild("(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', bubbles: true, cancelable: true })); window.dispatchEvent(new KeyboardEvent('keyup', { key: 'F6', bubbles: true, cancelable: true })); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', ctrlKey: true, bubbles: true, cancelable: true })); return true; })()").catch(() => {});
+      await sleep(1500);
+      const fo = ofType(await getLog(), "evora:focus-out").slice(nFo);
+      r.focusOut = fo.map((m) => ({ keys: m.payloadKeys, hasRe: m.hasRe }));
+      if (fo.length !== 1 || JSON.stringify(fo[0].payloadKeys) !== "[]" || fo[0].hasRe) flag("FOCUS-OUT", JSON.stringify(r.focusOut));
+
+      // 6. Enregistrer sous : un nouveau document de la coquille, adopté ; refusé, le document reste
+      await exec("file.newSequence", { name: "as-1" });
+      const nSave = await count("evora:save");
+      r.saveAsInvoke = await invoke("file.saveAs");
+      const sa = await next("evora:save", nSave, 10000);
+      const RB = await ulid();
+      if (sa) await send(await msg("evora:saved", { ok: true, version: 1, docRef: RB }, { re: sa.id }));
+      await sleep(1500);
+      pr = await inspect();
+      const asName = sa?.payload?.name;
+      r.saveAs = { msg: sa ? { docRef: sa.payload?.docRef, name: asName, saveAs: sa.payload?.saveAs, hasRe: sa.hasRe } : null, path: pr?.path ?? null };
+      if (!sa || sa.payload?.saveAs !== true || sa.payload?.docRef !== RA || sa.hasRe || typeof asName !== "string" || !asName.endsWith(".fcproj") || pr?.path !== `/evora/${RB}/${asName}`) {
+        flag("SAVE-AS-ADOPT", JSON.stringify(r.saveAs));
+      }
+      await exec("file.newSequence", { name: "as-2" });
+      const afterAs = await requestSave("user", RB);
+      r.saveAs.next = afterAs ? { type: afterAs.type, docRef: afterAs.payload?.docRef } : null;
+      if (afterAs?.type !== "evora:save" || afterAs.payload?.docRef !== RB) flag("SAVE-AS-ADOPT", `enregistrement suivant : ${JSON.stringify(r.saveAs.next)}`);
+      if (afterAs?.type === "evora:save") await send(await msg("evora:saved", { ok: true, version: 2 }, { re: afterAs.id }));
+      await exec("file.newSequence", { name: "as-3" });
+      const nSave2 = await count("evora:save");
+      await invoke("file.saveAs");
+      const sa2 = await next("evora:save", nSave2, 10000);
+      if (sa2) await send(await msg("evora:saved", { ok: false, error: "conflict" }, { re: sa2.id }));
+      await sleep(1500);
+      pr = await inspect();
+      r.saveAsRefused = { msg: sa2 ? { saveAs: sa2.payload?.saveAs, docRef: sa2.payload?.docRef } : null, path: pr?.path ?? null, dirty: pr?.dirty };
+      if (sa2?.payload?.saveAs !== true || sa2.payload?.docRef !== RB || !String(pr?.path).startsWith(`/evora/${RB}/`) || pr?.dirty !== true) flag("SAVE-AS-ADOPT", `refusé : ${JSON.stringify(r.saveAsRefused)}`);
+
+      // 7. S-MED : projet aux trois médias absents ; besoins par lots de 2 au plus ; URL signées
+      ready = await start("host=evora&lang=en&theme=dark&v1-medias", V1_CAPS, { maxPathsPerNeed: 2 });
+      if (!ready) return { bad, r };
+      const RM = await ulid();
+      mediaLog.length = 0;
+      const openM = await openDoc(RM, "medias.fcproj", String(mediaFixture));
+      await sleep(1500);
+      const needs = ofType(await getLog(), "evora:need");
+      const needPaths = needs.flatMap((m) => m.payload?.paths ?? []);
+      r.needs = needs.map((m) => ({ keys: m.payloadKeys, docRef: m.payload?.docRef, paths: m.payload?.paths }));
+      if (openM?.payload?.ok !== true || needs.length !== 2 || JSON.stringify([...needPaths].sort()) !== JSON.stringify(MEDIA_PATHS) ||
+        needs.some((m) => sortedKeys(m) !== '["docRef","paths"]' || m.payload?.docRef !== RM || !(m.payload?.paths?.length >= 1 && m.payload.paths.length <= 2))) {
+        flag("S-MED", `besoins : ${JSON.stringify(r.needs)}`);
+      }
+      const mediaUrl = (path, token) => `${parentOrigin}/__media/${path.split("/").pop()}?t=${token}`;
+      const answerNeed = async (nd, tokenOf) => {
+        for (const p of nd.payload?.paths ?? []) await send(await msg("evora:file", { path: p, url: mediaUrl(p, tokenOf(p)) }, { re: nd.id }));
+        await send(await msg("evora:ack", { ok: true }, { re: nd.id }));
+      };
+      for (const nd of needs) await answerNeed(nd, (p) => (p.endsWith("clip-c.wav") ? "x403" : "ok"));
+      let remotes = null;
+      for (let i = 0; i < 60 && !remotes; i++) {
+        const f = await inChild("filmcraft.files()").catch(() => []);
+        const got = MEDIA_PATHS.map((p) => (Array.isArray(f) ? f : []).find((x) => x.path === p));
+        if (got.every((x) => x && x.kind === "remote" && x.size === MEDIA_WAV.length)) remotes = got;
+        else await sleep(500);
+      }
+      pr = await inspect();
+      r.remotes = { ok: !!remotes, dirty: pr?.dirty };
+      if (!remotes) flag("S-MED", `médias non enregistrés : ${JSON.stringify(await inChild("filmcraft.files()").catch((e) => String(e)))}`);
+      if (pr?.dirty !== false) flag("S-MED", `projet modifié par l'arrivée des médias : ${JSON.stringify(pr?.dirty)}`);
+
+      // 8. export WAV du montage : lit les trois médias par plages ; l'URL de clip-c répond 403 à toute
+      //    lecture : un evora:need de ce seul chemin la renouvelle, et l'export s'achève vers Drive
+      const nNeed = needs.length;
+      const job = await exec("file.exportMedia", { format: "wav", path: "/exports/evora-mix.wav" });
+      let renewed = null;
+      let exp = null;
+      for (const until = Date.now() + 120000; Date.now() < until && !exp; ) {
+        const log = await getLog();
+        const nn = ofType(log, "evora:need");
+        if (!renewed && nn.length > nNeed) {
+          renewed = nn.at(-1);
+          await answerNeed(renewed, () => "ok");
+        }
+        exp = ofType(log, "evora:export").find((m) => m.payload?.name === "evora-mix.wav") ?? null;
+        if (!exp) await sleep(500);
+      }
+      if (exp) await send(await msg("evora:ack", { ok: true }, { re: exp.id }));
+      r.renew = { job: typeof job === "string" ? job : "ok", paths: renewed?.payload?.paths ?? null, export: exp ? { name: exp.payload?.name, mime: exp.payload?.mime, bytes: exp.payload?.bytes?.arrayBuffer ?? null, docRef: exp.payload?.docRef } : null };
+      if (!renewed || JSON.stringify(renewed.payload?.paths) !== JSON.stringify(["/files/clip-c.wav"]) || !exp || exp.payload?.mime !== "audio/wav" ||
+        !(exp.payload?.bytes?.arrayBuffer > 44) || exp.payload?.docRef !== RM) {
+        flag("S-MED-RENEW", JSON.stringify(r.renew));
+      }
+      const ml = mediaLog.filter((e) => /\/clip-[abc]\.wav$/.test(e.path));
+      r.mediaLog = { requests: ml.length, options: ml.filter((e) => e.method === "OPTIONS").length, badRange: ml.filter((e) => e.method === "GET" && !/^bytes=\d+-\d+$/.test(e.range ?? "")).map((e) => e.range),
+        foreign: ml.filter((e) => e.origin !== engineOrigin).length, cookies: ml.filter((e) => e.cookie).length,
+        reads: ml.filter((e) => e.method === "GET" && e.status === 206 && e.range !== "bytes=0-0").length, expired: ml.filter((e) => e.status === 403).length };
+      if (!ml.length || r.mediaLog.badRange.length || r.mediaLog.foreign || r.mediaLog.cookies || r.mediaLog.reads < 3 || r.mediaLog.expired < 1) flag("S-MED", `lectures par plages : ${JSON.stringify(r.mediaLog)}`);
+
+      // 9. S-EXP : un document d'échange (EDL) part vers Drive, jamais en téléchargement
+      const nExp = await count("evora:export");
+      const edl = await exec("file.exportEdl", { path: "/exports/temoin-exp.edl" });
+      const em = await next("evora:export", nExp, 10000);
+      if (em) await send(await msg("evora:ack", { ok: true }, { re: em.id }));
+      await sleep(1000);
+      r.edl = { result: typeof edl === "string" ? edl : "ok", msg: em ? { keys: sortedKeys(em), name: em.payload?.name, mime: em.payload?.mime, bytes: em.payload?.bytes?.arrayBuffer ?? null } : null, spy: await readSpy() };
+      if (!em || r.edl.msg.keys !== '["bytes","docRef","mime","name"]' || r.edl.msg.name !== "temoin-exp.edl" || r.edl.msg.mime !== "text/plain" || !(r.edl.msg.bytes > 0)) flag("S-EXP", JSON.stringify(r.edl));
+
+      // 9 b. ACTIVITY-EXPORT : un export de barres et tonalité (aucun média de Drive), après l'EDL de la
+      //      séquence des médias : evora:activity {busy: true} avant l'evora:export, {busy: false} ensuite
+      const bars = await exec("file.newBarsAndTone", { seconds: 2 });
+      const barsItem = bars && typeof bars === "object" ? bars.item ?? bars.id ?? null : null;
+      const barsSeq = await exec("file.newSequence", { fromItem: barsItem, name: "S-barres" });
+      const nLog = fromEngine(await getLog()).length;
+      const barsJob = await exec("file.exportMedia", { format: "wav", path: "/exports/evora-barres.wav" });
+      const barsExp = await waitFor((log) => fromEngine(log).slice(nLog).find((m) => m.type === "evora:export" && m.payload?.name === "evora-barres.wav"), 60000);
+      if (barsExp) await send(await msg("evora:ack", { ok: true }, { re: barsExp.id }));
+      await sleep(2000);
+      const logB = fromEngine(await getLog()).slice(nLog);
+      const acts = logB.map((m, i) => ({ m, i })).filter((x) => x.m.type === "evora:activity").map((x) => ({ i: x.i, busy: x.m.payload?.busy, kind: x.m.payload?.kind, keys: sortedKeys(x.m) }));
+      const iExp = barsExp ? logB.findIndex((m) => m.id === barsExp.id) : -1;
+      r.activity = { bars: barsItem, seq: typeof barsSeq === "string" ? barsSeq : "ok", job: typeof barsJob === "string" ? barsJob : "ok", acts, iExp,
+        export: barsExp ? { keys: sortedKeys(barsExp), mime: barsExp.payload?.mime, bytes: barsExp.payload?.bytes?.arrayBuffer ?? null } : null };
+      if (typeof barsItem !== "number" || typeof barsSeq === "string") flag("PREMISSE", `barres et tonalité : ${JSON.stringify(r.activity)}`);
+      const alternates = acts.length >= 2 && acts.every((x, k) => x.busy === (k % 2 === 0) && x.kind === "export" && x.keys === '["busy","kind"]');
+      if (!barsExp || !alternates || !(acts[0]?.i < iExp) || acts.at(-1)?.busy !== false) flag("ACTIVITY-EXPORT", JSON.stringify(r.activity));
+      if (!barsExp || r.activity.export.keys !== '["bytes","docRef","mime","name"]' || barsExp.payload?.mime !== "audio/wav" || !(barsExp.payload?.bytes?.arrayBuffer > 44)) flag("S-EXP", `export de barres : ${JSON.stringify(r.activity.export)}`);
+      // 10. S-PICK : File ▸ Import ouvre le sélecteur de la coquille (jamais celui du navigateur) ; le
+      //     fichier choisi arrive par URL signée, lu par plages à latence injectée, puis importé
+      const pickImport = async (file, tag) => {
+        const nPick = await count("evora:pick");
+        const inv = await invoke("file.import");
+        const pk = await next("evora:pick", nPick, 10000);
+        const local = await inChild("window.__spy ? window.__spy.picker : null").catch(() => null);
+        const out = { invoke: inv, pick: pk ? { keys: sortedKeys(pk), purpose: pk.payload?.purpose, multiple: pk.payload?.multiple, accept: pk.payload?.accept?.length ?? null } : null, local };
+        if (!pk) { flag(tag, `aucun evora:pick : ${JSON.stringify(out)}`); return out; }
+        const acceptOk = Array.isArray(pk.payload?.accept) && pk.payload.accept.length >= 1 && pk.payload.accept.length <= 32 && pk.payload.accept.every((a) => /^(\.[a-z0-9]+|[a-z0-9.+-]+\/[a-z0-9.+*-]+)$/.test(a));
+        if (out.pick.keys !== '["accept","multiple","purpose"]' || out.pick.purpose !== "import" || out.pick.multiple !== true || !acceptOk || local !== 0) flag(tag, `evora:pick : ${JSON.stringify(out)}`);
+        mediaLog.length = 0;
+        await send(await msg("evora:file", { path: `/evora/${await ulid()}/${file}`, name: file, url: `${parentOrigin}/__media/${file}?t=ok` }, { re: pk.id }));
+        await send(await msg("evora:ack", { ok: true }, { re: pk.id }));
+        const stem = file.replace(/\.wav$/, "");
+        let got = false;
+        for (let i = 0; i < 60 && !got; i++) {
+          const t = await tree();
+          got = t.items.includes(stem) || t.items.includes(file);
+          if (!got) await sleep(500);
+        }
+        const fl = mediaLog.filter((e) => e.path.endsWith("/" + file));
+        out.imported = got;
+        out.requests = fl.map((e) => `${e.method} ${e.range ?? "-"} ${e.status}`);
+        if (!got || fl.some((e) => e.method === "GET" && !/^bytes=\d+-\d+$/.test(e.range ?? "")) || fl.some((e) => e.cookie || e.origin !== engineOrigin)) flag(tag, `import par le sélecteur : ${JSON.stringify(out)}`);
+        return out;
+      };
+      r.pick = await pickImport("pick-a.wav", "S-PICK");
+      r.pickSuffix = await pickImport("temoin-suffixe.wav", "S-PICK-SUFFIXE");
+      r.pickInclude = await pickImport("temoin-include.wav", "S-PICK-INCLUDE");
+      const nPick2 = await count("evora:pick");
+      const capInv = await invoke("captions.import");
+      const pk2 = await next("evora:pick", nPick2, 8000);
+      const localCap = await inChild("window.__spy ? window.__spy.picker : null").catch(() => null);
+      if (pk2) await send(await msg("evora:ack", { ok: false, code: "cancelled" }, { re: pk2.id }));
+      r.pickLocal = { invoke: capInv, pick: pk2 ? { purpose: pk2.payload?.purpose, accept: pk2.payload?.accept } : null, local: localCap };
+      if (!pk2 || pk2.payload?.purpose !== "import" || !pk2.payload?.accept?.includes(".srt") || localCap !== 0) flag("S-PICK-LOCAL", JSON.stringify(r.pickLocal));
+
+      // 11. S-DROP : un fichier déposé sur le canevas va à la coquille (evora:drop), puis est importé
+      const nDrop = await count("evora:drop");
+      const dispatched = await inChild(`(async () => { const b = await (await fetch("/__media/drop-a.wav")).blob(); const dt = new DataTransfer(); dt.items.add(new File([b], "drop-a.wav", { type: "audio/wav" })); const ev = new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }); window.dispatchEvent(ev); return ev.defaultPrevented; })()`).catch((e) => String(e));
+      const dm = await next("evora:drop", nDrop, 8000);
+      r.drop = { dispatched, msg: dm ? { keys: sortedKeys(dm), purpose: dm.payload?.purpose, files: dm.payload?.files } : null };
+      if (!dm || r.drop.msg.keys !== '["files","purpose"]' || dm.payload?.purpose !== "import" || dm.payload?.files?.length !== 1 || dm.payload.files[0]?.file !== "drop-a.wav") {
+        flag("S-DROP", JSON.stringify(r.drop));
+      } else {
+        await send(await msg("evora:file", { path: `/evora/${await ulid()}/drop-a.wav`, name: "drop-a.wav", url: `${parentOrigin}/__media/drop-a.wav?t=ok` }, { re: dm.id }));
+        await send(await msg("evora:ack", { ok: true }, { re: dm.id }));
+        let got = false;
+        for (let i = 0; i < 60 && !got; i++) {
+          const t = await tree();
+          got = t.items.includes("drop-a") || t.items.includes("drop-a.wav");
+          if (!got) await sleep(500);
+        }
+        r.drop.imported = got;
+        if (!got) flag("S-DROP", `fichier déposé non importé : ${JSON.stringify(r.drop)}`);
+      }
+
+      // 12. repli WebGL : WebGPU démarre mais son périphérique échoue (espion) ; la page se recharge en
+      //     ?webgl et garde host=evora : le pont démarre sur WebGL2 (un seul evora:ready, aucun échec)
+      await readSpy();
+      await inParent("window.__ehp.clear()");
+      await inChild("window.__smokeAncien = true").catch(() => {});
+      await evaluate(cdp, ps, `document.getElementById('engine').src = ${JSON.stringify(engineOrigin + "/index.html?host=evora&lang=en&theme=dark&wgfail")}; true`);
+      let wg = null;
+      for (const until = Date.now() + 90000; Date.now() < until; ) {
+        try {
+          wg = await inChild("(() => { const l = window.filmcraftLoad || {}; return { readyMs: l.readyMs ?? null, error: l.error ?? null, search: location.search, old: !!window.__smokeAncien }; })()");
+          if (!wg.old && wg.search.includes("webgl") && wg.readyMs) break;
+        } catch {
+          // document en cours de remplacement
+        }
+        await sleep(250);
+      }
+      if (wg?.readyMs) markReady();
+      const readyWg = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:ready"), 20000);
+      await sleep(1000);
+      const infoWg = await inChild("filmcraft.info()").catch(() => null);
+      const q = new URLSearchParams(String(wg?.search ?? ""));
+      r.webgl = { load: wg, readies: await count("evora:ready"), failed: await count("evora:failed"), backend: infoWg?.backend ?? null };
+      if (!wg?.readyMs || q.get("host") !== "evora" || !q.has("webgl") || !q.has("wgfail") || !readyWg || r.webgl.readies !== 1 || r.webgl.failed !== 0 || !/gl/i.test(String(r.webgl.backend))) {
+        flag("WEBGL-KEEPS-HOST", JSON.stringify(r.webgl));
+      }
+
+      // 13. WRITE-NEW : la création exclusive (write_file_new, audio incorporé d'un AAF) passe par le
+      //     crochet d'écriture : vers Drive avec export.drive, refusée sans, jamais un succès muet
+      const writeNew = (p) => inChild(`(async () => { const b = new Uint8Array(await (await fetch("/__media/clip-a.wav")).arrayBuffer()); return filmcraft.writeFileNew(${JSON.stringify(p)}, b).then(() => true, (e) => "erreur : " + e.message); })()`).catch((e) => String(e));
+      r.writeNew = {};
+      ready = await start("host=evora&lang=en&theme=dark&v1-ecriture");
+      if (ready) {
+        await openDoc(await ulid(), "ecriture.fcproj", String(fixture));
+        const nE = await count("evora:export");
+        const w1 = await writeNew("/files/audio-incorpore.wav");
+        const w2 = await writeNew("/files/audio-incorpore.wav");
+        await sleep(1000);
+        const ex1 = ofType(await getLog(), "evora:export").slice(nE);
+        for (const e of ex1) await send(await msg("evora:ack", { ok: true }, { re: e.id }));
+        r.writeNew.exported = { first: w1, again: w2, names: ex1.map((e) => e.payload?.name) };
+        if (w1 !== true || !/exist/i.test(String(w2)) || ex1.length !== 1 || ex1[0].payload?.name !== "audio-incorpore.wav") flag("WRITE-NEW", JSON.stringify(r.writeNew.exported));
+      }
+      ready = await start("host=evora&lang=en&theme=dark&v1-sans-export", V1_CAPS.filter((c) => c !== "export.drive"));
+      if (ready) {
+        await openDoc(await ulid(), "ecriture.fcproj", String(fixture));
+        const w3 = await writeNew("/files/audio-refuse.wav");
+        await sleep(1000);
+        const listed = (await inChild("filmcraft.files()").catch(() => [])).some?.((f) => f.path === "/files/audio-refuse.wav") ?? null;
+        r.writeNew.refused = { result: w3, exports: await count("evora:export"), listed };
+        if (w3 === true || !/inside Evora/.test(String(w3)) || r.writeNew.refused.exports !== 0 || listed !== false) flag("WRITE-NEW", `sans export.drive : ${JSON.stringify(r.writeNew.refused)}`);
+      }
+
+      // 14. aucun téléchargement de toute la séquence (ancres comptées par l'espion, et le navigateur)
+      await readSpy();
+      r.downloads = { anchors: spyCounts.download, browser: downloadEvents.length, localPickers: spyCounts.picker };
+      if (spyCounts.download !== 0 || downloadEvents.length !== 0) flag("TELECHARGEMENT", JSON.stringify(r.downloads));
+      await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: spy.identifier }, childSession).catch(() => {});
+      return { bad, r, catalog: cat1, version: r.version };
+    }
+
+    const v1 = await pontV1();
+    report.ehp.v1 = v1.r;
+    report.ehp.v1Failures = v1.bad;
+    report.ehp.v1Tags = [...new Set(v1.bad.map((b) => b.tag))].sort();
+    for (const b of v1.bad) fail(`E4 [V1-${b.tag}] ${b.text}`);
+    // catalogue des commandes pour l'artefact (anglais, trié par identifiant) et son empreinte, calculée
+    // sur ce qui ne dépend pas de la langue : identifiant, drapeau destructif, paramètres
+    if (commandsOut) {
+      const list = Array.isArray(v1.catalog?.payload?.commands) ? [...v1.catalog.payload.commands].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) : null;
+      if (!list) fail("E4 [V1-COMMANDS-CATALOG] aucun catalogue à écrire pour l'artefact");
+      else {
+        const canonical = JSON.stringify(list.map((c) => ({ id: c.id, destructive: c.destructive, params: c.params })));
+        const fingerprint = "sha256:" + createHash("sha256").update(canonical).digest("hex");
+        writeFileSync(commandsOut, JSON.stringify({ app: "corte", version: v1.version ?? null, ehp: "1.0", lang: "en", fingerprint, commands: list }, null, 1) + "\n");
+        report.ehp.commandsFile = { path: commandsOut, commands: list.length, fingerprint };
+      }
+    }
+    hostConfig = null;
   }
 
   // E5 (mesure) : clés localStorage et bases IndexedDB réellement présentes pour l'origine moteur
@@ -1172,6 +1707,11 @@ try {
     (e, i) =>
       (e.kind === "exception" || e.kind === "console.error" || e.kind === "log.error") &&
       !(e.role === "iframe" && crashAt.has(e.gen) && i >= crashAt.get(e.gen)) &&
+      // COR-FK-B1 : les 403 voulus du renouvellement d'URL (jeton x403 du scénario pont-v1), et les
+      // refus réseau des seuls fichiers « temoin-* » (le témoin groupé de la livraison les provoque ;
+      // leur détecteur S-PICK-* juge l'effet)
+      !(e.source === "network" && /\/__media\/[^ ]*[?&]t=x403/.test(String(e.text))) &&
+      !(/\/__media\/temoin-/.test(String(e.text)) && (e.source === "network" || /CORS|Range|416/i.test(String(e.text)))) &&
       (e.role === "parent" ? true : e.role === "iframe" ? okGens.has(e.gen) : e.role !== "browser"),
   );
   report.expectedCrashes = [...crashAt.entries()].map(([gen, from]) => ({ gen, from, events: events.filter((e, i) => e.role === "iframe" && e.gen === gen && i >= from).length }));
@@ -1213,6 +1753,7 @@ console.log(
     `Stockage (E5, correctif) : ${JSON.stringify(report.storageE5 ?? "non vérifié")}`,
     `Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
     `Pont EHP (E4, scénario pont-ehp) : ${JSON.stringify(report.ehp ?? "non vérifié")}`,
+    `Pont V1 (COR-FK-B1, scénario pont-v1) : étiquettes rouges ${JSON.stringify(report.ehp?.v1Tags ?? null)} ; catalogue ${JSON.stringify(report.ehp?.commandsFile ?? null)}`,
     `Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `Info moteur : ${JSON.stringify(report.info ?? null).slice(0, 600)}`,
     report.failures.length ? `ROUGE (${report.failures.length} échec(s))` : "VERT",
@@ -1232,6 +1773,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- Stockage (E5, correctif) : ${JSON.stringify(report.storageE5 ?? "non vérifié")}`,
     `- Thème (E2) : ${JSON.stringify(report.theme ?? "non vérifié")}`,
     `- Pont EHP (E4, scénario pont-ehp) : moteur ${JSON.stringify(report.ehp?.engine?.messages ?? "non vérifié")} ; témoin sabordé relevé : ${JSON.stringify(report.ehp?.witness?.tags ?? null)}`,
+    `- Pont V1 (COR-FK-B1, scénario pont-v1) : étiquettes rouges ${JSON.stringify(report.ehp?.v1Tags ?? null)} ; catalogue ${JSON.stringify(report.ehp?.commandsFile ?? null)}`,
     `- Stockage navigateur hors OPFS (mesure E5) : ${JSON.stringify(report.storage ?? null)}`,
     `- Événements bloquants : ${report.blockingEvents?.length ?? "?"} ; verdict : **${report.failures.length ? "ROUGE" : "VERT"}**`,
     ...report.failures.map((f) => `  - ${f.replace(/\n/g, " ").slice(0, 300)}`),
