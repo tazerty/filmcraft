@@ -10,6 +10,11 @@
 //! - Files the app writes (saved projects, exports, captions) are kept in memory under their
 //!   path and offered as a browser download; paths under `/opfs/` are written to the Origin
 //!   Private File System instead (auto-save / crash recovery).
+//! - Evora fork (patch COR-FK-B1): inside Evora's shell, a medium of Evora's Drive is a *remote*
+//!   entry: the same chunk cache, filled by HTTP range reads of a signed URL ([`crate::remote`])
+//!   instead of `Blob.slice()`. An expired URL makes its chunks wait (never fail) until the shell
+//!   sends a new one ([`crate::ehp_media::renew`]). And `write_file_new` goes through the write
+//!   hook like `write_file`: inside Evora the hook decides, and its refusal fails the write.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -36,10 +41,21 @@ enum Entry {
     Mem(Arc<[u8]>),
 }
 
+/// Evora fork (COR-FK-B1): a remote entry's source, a signed URL of Evora's Drive.
+struct Remote {
+    url: String,
+    path: String,
+    size: u64,
+    /// The URL expired: chunks wait for a new one.
+    expired: bool,
+}
+
 #[derive(Default)]
 struct Fs {
     entries: HashMap<String, Entry>,
     blobs: HashMap<u32, web_sys::Blob>,
+    /// Evora fork (COR-FK-B1): remote entries, by the same ids as blobs.
+    remotes: HashMap<u32, Remote>,
     next_id: u32,
     chunks: HashMap<(u32, u64), (Arc<[u8]>, u64)>,
     bytes: usize,
@@ -105,6 +121,84 @@ pub fn put(path: &str, data: Vec<u8>) {
     FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
 }
 
+/// Evora fork (COR-FK-B1): a file is at `path`.
+pub fn has(path: &str) -> bool {
+    FS.with(|fs| fs.borrow().entries.contains_key(path))
+}
+
+/// Evora fork (COR-FK-B1): move the file at `from` to `to` (Save As adopted inside Evora).
+pub fn rename(from: &str, to: &str) {
+    FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        if let Some(e) = fs.entries.remove(from) {
+            fs.entries.insert(to.to_string(), e);
+        }
+    });
+}
+
+/// Evora fork (COR-FK-B1): forget the file at `path` (an in-memory file the shell refused).
+pub fn remove(path: &str) {
+    FS.with(|fs| {
+        fs.borrow_mut().entries.remove(path);
+    });
+}
+
+/// Evora fork (COR-FK-B1): a medium of Evora's Drive at `path`, read by range from the signed
+/// `url` ([`crate::remote`]), `size` bytes long. An entry already at `path` is replaced.
+pub fn register_remote(path: &str, url: String, size: u64) {
+    FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        let old = match fs.entries.get(path) {
+            Some(Entry::Blob { id, .. }) => Some(*id),
+            _ => None,
+        };
+        if let Some(old) = old {
+            fs.blobs.remove(&old);
+            fs.remotes.remove(&old);
+            fs.chunks.retain(|k, _| k.0 != old);
+            fs.recount();
+        }
+        let id = fs.next_id;
+        fs.next_id += 1;
+        fs.remotes.insert(id, Remote { url, path: path.to_string(), size, expired: false });
+        fs.entries.insert(path.to_string(), Entry::Blob { id, size });
+    });
+}
+
+/// Evora fork (COR-FK-B1): the remote entry at `path` is a medium of Evora's Drive.
+pub fn is_remote(path: &str) -> bool {
+    FS.with(|fs| {
+        let fs = fs.borrow();
+        matches!(fs.entries.get(path), Some(Entry::Blob { id, .. }) if fs.remotes.contains_key(id))
+    })
+}
+
+/// Evora fork (COR-FK-B1): a new signed URL for the remote entry at `path`, whose URL expired:
+/// its waiting chunks are fetched again. `false` when `path` is no remote entry.
+pub fn renew_remote(path: &str, url: String) -> bool {
+    let renewed = FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        let id = match fs.entries.get(path) {
+            Some(Entry::Blob { id, .. }) => *id,
+            _ => return None,
+        };
+        let remote = fs.remotes.get_mut(&id)?;
+        remote.url = url;
+        remote.expired = false;
+        fs.failed.retain(|k, _| k.0 != id);
+        Some(fs.on_data.clone())
+    });
+    match renewed {
+        Some(wake) => {
+            if let Some(w) = wake {
+                w();
+            }
+            true
+        }
+        None => false,
+    }
+}
+
 /// (path, size, kind) of every file.
 pub fn list() -> Vec<(String, u64, &'static str)> {
     FS.with(|fs| {
@@ -113,7 +207,7 @@ pub fn list() -> Vec<(String, u64, &'static str)> {
             .entries
             .iter()
             .map(|(p, e)| match e {
-                Entry::Blob { size, .. } => (p.clone(), *size, "blob"),
+                Entry::Blob { id, size } => (p.clone(), *size, if fs.remotes.contains_key(id) { "remote" } else { "blob" }),
                 Entry::Mem(b) => (p.clone(), b.len() as u64, "memory"),
             })
             .collect();
@@ -203,51 +297,112 @@ impl Fs {
     }
 }
 
+/// Where a chunk comes from: a browser `Blob`, or (Evora fork, COR-FK-B1) a signed URL of Evora's
+/// Drive read by range.
+enum Source {
+    Blob(web_sys::Blob),
+    Remote { url: String, size: u64 },
+}
+
 /// Start fetching chunk `c` of blob `id` unless it is cached or already on its way.
 fn request(id: u32, c: u64) {
-    let blob = FS.with(|fs| {
+    let source = FS.with(|fs| {
         let mut fs = fs.borrow_mut();
         if fs.chunks.contains_key(&(id, c)) || fs.inflight.contains(&(id, c)) {
             return None;
         }
-        let blob = fs.blobs.get(&id)?.clone();
+        let source = match fs.blobs.get(&id) {
+            Some(blob) => Source::Blob(blob.clone()),
+            None => {
+                let remote = fs.remotes.get(&id)?;
+                // an expired URL waits for the shell's new one
+                if remote.expired {
+                    return None;
+                }
+                Source::Remote { url: remote.url.clone(), size: remote.size }
+            }
+        };
         fs.failed.remove(&(id, c));
         fs.inflight.insert((id, c));
-        Some(blob)
+        Some(source)
     });
-    let Some(blob) = blob else { return };
+    match source {
+        Some(Source::Blob(blob)) => fetch_blob_chunk(id, c, blob),
+        Some(Source::Remote { url, size }) => fetch_remote_chunk(id, c, url, size),
+        None => {}
+    }
+}
+
+fn fetch_blob_chunk(id: u32, c: u64, blob: web_sys::Blob) {
     let size = blob.size() as u64;
     let (a, b) = (c * CHUNK, ((c + 1) * CHUNK).min(size));
     let fut = blob.slice_with_f64_and_f64(a as f64, b as f64).map(|s| JsFuture::from(s.array_buffer()));
     wasm_bindgen_futures::spawn_local(async move {
         let r = match fut {
-            Ok(f) => f.await.map(|buf| js_sys::Uint8Array::new(&buf).to_vec()),
-            Err(e) => Err(e),
+            Ok(f) => f.await.map(|buf| js_sys::Uint8Array::new(&buf).to_vec()).map_err(|e| format!("{e:?}")),
+            Err(e) => Err(format!("{e:?}")),
         };
-        let wake = FS.with(|fs| {
-            let mut fs = fs.borrow_mut();
-            fs.inflight.remove(&(id, c));
-            // a blob replaced or dropped meanwhile: discard
-            if fs.blobs.contains_key(&id) {
-                match r {
-                    Ok(v) => {
-                        fs.clock += 1;
-                        let t = fs.clock;
-                        fs.bytes += v.len();
-                        fs.chunks.insert((id, c), (v.into(), t));
-                        fs.evict();
-                    }
-                    Err(e) => {
-                        fs.failed.insert((id, c), format!("{e:?}"));
-                    }
-                }
-            }
-            fs.on_data.clone()
-        });
-        if let Some(w) = wake {
-            w();
+        chunk_arrived(id, c, r);
+    });
+}
+
+/// Evora fork (COR-FK-B1): chunk `c` of a remote entry, by one bounded range of its signed URL.
+fn fetch_remote_chunk(id: u32, c: u64, url: String, size: u64) {
+    let (a, b) = (c * CHUNK, ((c + 1) * CHUNK).min(size));
+    wasm_bindgen_futures::spawn_local(async move {
+        if b <= a {
+            chunk_arrived(id, c, Err("read past end of file".to_string()));
+            return;
+        }
+        match crate::remote::get_range(&url, a, b - 1).await {
+            Ok(reply) => chunk_arrived(id, c, Ok(reply.bytes)),
+            Err(crate::remote::RangeError::Expired) => url_expired(id, c),
+            Err(crate::remote::RangeError::Other(e)) => chunk_arrived(id, c, Err(e)),
         }
     });
+}
+
+/// A fetched chunk (or its error) goes to the cache; the UI is woken to retry pending reads.
+fn chunk_arrived(id: u32, c: u64, r: Result<Vec<u8>, String>) {
+    let wake = FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        fs.inflight.remove(&(id, c));
+        // a blob replaced or dropped meanwhile: discard
+        if fs.blobs.contains_key(&id) || fs.remotes.contains_key(&id) {
+            match r {
+                Ok(v) => {
+                    fs.clock += 1;
+                    let t = fs.clock;
+                    fs.bytes += v.len();
+                    fs.chunks.insert((id, c), (v.into(), t));
+                    fs.evict();
+                }
+                Err(e) => {
+                    fs.failed.insert((id, c), e);
+                }
+            }
+        }
+        fs.on_data.clone()
+    });
+    if let Some(w) = wake {
+        w();
+    }
+}
+
+/// Evora fork (COR-FK-B1): the signed URL of remote entry `id` expired: chunk `c` waits, unfailed,
+/// and the shell is asked once for a new URL (`evora:need`, HOST-PROTOCOL §7.5).
+fn url_expired(id: u32, c: u64) {
+    let path = FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        fs.inflight.remove(&(id, c));
+        let remote = fs.remotes.get_mut(&id)?;
+        let first = !remote.expired;
+        remote.expired = true;
+        first.then(|| remote.path.clone())
+    });
+    if let Some(path) = path {
+        crate::ehp_media::renew(&path);
+    }
 }
 
 /// Random-access reads of a registered Blob through the chunk cache.
@@ -370,8 +525,14 @@ impl Services for WebServices {
             fs.entries.insert(path.to_owned(), Entry::Mem(Arc::from(data)));
             Ok(fs.on_write.clone())
         })?;
-        if let Some(h) = hook {
-            h(path, data);
+        // Evora fork (COR-FK-B1): the write hook decides, as for `write_file`: inside Evora a new
+        // file goes to the shell (`evora:export`) or the write fails (`NOT_HERE`), and nothing
+        // stays behind; never a silent success.
+        if let Some(h) = hook
+            && let Err(e) = h(path, data)
+        {
+            FS.with(|fs| fs.borrow_mut().entries.remove(path));
+            return Err(io::Error::other(e));
         }
         Ok(())
     }

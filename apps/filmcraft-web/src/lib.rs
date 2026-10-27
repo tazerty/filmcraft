@@ -15,7 +15,9 @@
 //! | TCP control channel / MCP | `window.filmcraft` JavaScript API ([`api`]) |
 //!
 //! Evora fork (patch E4): with `?host=evora` inside an `<iframe>`, Evora's shell, on another origin
-//! that `evora-host.json` admits, speaks the Evora host protocol with the engine ([`ehp`]).
+//! that `evora-host.json` admits, speaks the Evora host protocol with the engine ([`ehp`]; V1
+//! bridge of patch COR-FK-B1: [`ehp_save`], [`ehp_commands`], [`ehp_media`], [`ehp_focus`],
+//! [`remote`]).
 //!
 //! Everything here is `wasm32`-only; on other targets the crate is empty.
 #![cfg(target_arch = "wasm32")]
@@ -25,11 +27,17 @@ pub mod api;
 pub mod audio;
 pub mod download_pacing;
 pub mod ehp;
+pub mod ehp_commands;
+pub mod ehp_focus;
+pub mod ehp_media;
+pub mod ehp_save;
+pub mod ehp_wire;
 pub mod fs;
 pub mod import;
 pub mod opfs;
 pub mod recovery;
 pub mod recovery_policy;
+pub mod remote;
 pub mod webcodecs;
 
 use std::cell::{Cell, RefCell};
@@ -97,7 +105,7 @@ fn pump() {
     for f in actions {
         f(&mut *app, &ctx);
     }
-    ehp::tick(&app.app.session);
+    ehp::tick(&mut app.app.session);
 }
 
 /// Ask for a UI frame.
@@ -154,7 +162,7 @@ impl eframe::App for WebApp {
             f(self, ctx);
         }
         self.app.logic(ctx, frame);
-        ehp::tick(&self.app.session);
+        ehp::tick(&mut self.app.session);
         api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {

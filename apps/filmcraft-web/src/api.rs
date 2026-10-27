@@ -12,6 +12,7 @@
 //! await filmcraft.importFiles(input.files)                 // File / FileList / File[]
 //! await filmcraft.openProject(file)                        // .fcproj File or URL
 //! filmcraft.files(); await filmcraft.readFile("/exports/a.mp4"); filmcraft.info()
+//! await filmcraft.writeFileNew("/files/a.wav", bytes)       // Evora fork: exclusive creation
 //! ```
 //!
 //! Results resolve with the method's `result`; errors reject with the error message.
@@ -19,6 +20,7 @@
 use std::cell::RefCell;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
+use filmcraft_engine::Services;
 use filmcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
@@ -209,6 +211,18 @@ pub fn install() -> Result<(), JsValue> {
                 };
                 crate::import::open_project_file(file).await.map(|v| to_js(&v)).map_err(|e| JsValue::from(js_sys::Error::new(&e)))
             }))
+        })
+        .into_js_value(),
+    )?;
+    // Evora fork (patch COR-FK-B1): the engine's exclusive file creation (`Services::write_file_new`,
+    // used by AAF and OMF imports for their embedded audio), for the CI smoke test of its write
+    // hook: inside Evora the shell takes the file (`evora:export`) or the write fails.
+    set_fn(
+        &obj,
+        "writeFileNew",
+        Closure::<dyn Fn(String, js_sys::Uint8Array) -> js_sys::Promise>::new(|path: String, bytes: js_sys::Uint8Array| {
+            let data = bytes.to_vec();
+            future_to_promise(async move { crate::fs::WebServices.write_file_new(&path, &data).map(|()| JsValue::TRUE).map_err(|e| js_sys::Error::new(&e.to_string()).into()) })
         })
         .into_js_value(),
     )?;

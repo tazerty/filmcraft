@@ -163,22 +163,65 @@ fn picked(files: Vec<web_sys::File>, relink: Option<RelinkHint>) {
     wasm_bindgen_futures::spawn_local(async move {
         let path = fs::register_blob(&f.name(), f.clone().into());
         crate::recovery::keep_media(&path, &f);
-        let mut params = hint.params;
-        if !params.is_object() {
-            params = json!({});
-        }
-        params["path"] = json!(path);
-        let command = hint.command;
-        let outcome = on_ui(move |w, _| w.app.session.execute(&command, params).map_err(|e| e.to_string())).await;
-        crate::post(move |w, _| match outcome {
-            Ok(v) => {
-                if let Some(n) = v.get("relinked").and_then(Value::as_array).map(Vec::len) {
-                    w.app.status(format!("Linked {n} clip(s)"));
-                }
-            }
-            Err(e) => w.app.status(e),
-        });
+        run_relink(path, hint).await;
     });
+}
+
+/// The relink hint's command on the file at `path`.
+async fn run_relink(path: String, hint: RelinkHint) {
+    let mut params = hint.params;
+    if !params.is_object() {
+        params = json!({});
+    }
+    params["path"] = json!(path);
+    let command = hint.command;
+    let outcome = on_ui(move |w, _| w.app.session.execute(&command, params).map_err(|e| e.to_string())).await;
+    crate::post(move |w, _| match outcome {
+        Ok(v) => {
+            if let Some(n) = v.get("relinked").and_then(Value::as_array).map(Vec::len) {
+                w.app.status(format!("Linked {n} clip(s)"));
+            }
+        }
+        Err(e) => w.app.status(e),
+    });
+}
+
+/// Evora fork (patch COR-FK-B1): files the shell registered (the answer of its picker or of a
+/// drop, `crate::ehp_media`) are imported, read where they are (no copy in the browser).
+pub async fn import_registered(paths: Vec<String>) -> Value {
+    let bin = on_ui(|w, _| w.app.import_bin().0).await;
+    let mut items = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        let size = fs::WebServices.file_size(&path).unwrap_or(0);
+        prewarm(&path, size).await;
+        match import_path(path.clone(), bin).await {
+            Ok(v) => {
+                items.extend(v.get("items").and_then(Value::as_array).cloned().unwrap_or_default());
+                errors.extend(v.get("errors").and_then(Value::as_array).cloned().unwrap_or_default());
+            }
+            Err(e) => errors.push(json!(e)),
+        }
+    }
+    if !errors.is_empty() {
+        let msg = errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+        crate::post(move |w, _| w.app.status(msg));
+    }
+    json!({"items": items, "errors": errors})
+}
+
+/// Evora fork (patch COR-FK-B1): Link Media ▸ Locate… answered by the shell's picker: the hint's
+/// command runs on the file the shell registered.
+pub fn relink_registered(path: String, hint: RelinkHint) {
+    wasm_bindgen_futures::spawn_local(run_relink(path, hint));
+}
+
+/// Evora fork (patch COR-FK-B1): inside Evora a picker is the shell's (`evora:pick`); without it
+/// the app says so, and never opens the browser's own.
+fn host_pick(purpose: &'static str, exts: &[&str], multiple: bool, hint: Option<RelinkHint>) {
+    if !crate::ehp_media::pick(purpose, exts, multiple, hint) {
+        crate::post(|w, _| w.app.status("Files come from Evora's Drive here, and its picker is not available"));
+    }
 }
 
 fn has_fsa_picker() -> bool {
@@ -241,7 +284,16 @@ pub fn install_drop_handlers() -> Result<(), JsValue> {
         e.prevent_default();
         e.stop_propagation();
         if let Some(list) = e.data_transfer().and_then(|d| d.files()) {
-            take_files((0..list.length()).filter_map(|i| list.get(i)).collect());
+            let files: Vec<web_sys::File> = (0..list.length()).filter_map(|i| list.get(i)).collect();
+            // Evora fork (patch COR-FK-B1, COR-15): inside Evora a drop goes to the shell, which
+            // puts the files in Drive first (`evora:drop`); never read from the browser here
+            if crate::opfs::hosted() {
+                if !crate::ehp_media::drop_files(files) {
+                    crate::post(|w, _| w.app.status("Dropped files go to Evora's Drive here, which is not available"));
+                }
+            } else {
+                take_files(files);
+            }
         }
     });
     w.add_event_listener_with_callback_and_bool("drop", drop.as_ref().unchecked_ref(), true)?;
@@ -251,27 +303,47 @@ pub fn install_drop_handlers() -> Result<(), JsValue> {
 
 /// Wire the UI's file dialogs to the browser.
 pub fn install_hooks(app: &mut FilmcraftApp) {
+    // Evora fork (patch COR-FK-B1): inside Evora's shell every picker is the shell's
+    // (`crate::ehp_media`), Save As makes a new document of the shell (`crate::ehp_save`).
+    let hosted = crate::opfs::hosted();
     // Pickers are asynchronous: the dialog hook starts the picker and returns nothing; the files
     // are imported when the user has chosen them.
-    app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
-        pick(exts, true);
+    app.hooks.pick_files = Some(Box::new(move |exts: &[&str]| {
+        if hosted {
+            host_pick("import", exts, true, None);
+        } else {
+            pick(exts, true);
+        }
         Vec::new()
     }));
-    app.hooks.pick_open_project = Some(Box::new(|| {
-        pick(&["fcproj"], false);
+    app.hooks.pick_open_project = Some(Box::new(move || {
+        if hosted {
+            host_pick("open", &["fcproj"], false, None);
+        } else {
+            pick(&["fcproj"], false);
+        }
         None
     }));
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
-    app.hooks.pick_save = Some(Box::new(|name: &str| Some(format!("/projects/{name}"))));
+    app.hooks.pick_save = Some(Box::new(move |name: &str| {
+        if hosted {
+            return crate::ehp_save::save_as_path(name);
+        }
+        Some(format!("/projects/{name}"))
+    }));
     app.hooks.pick_save_as = Some(Box::new(|_filter: &str, _exts: &[&str], name: &str| {
         let file = std::path::Path::new(name).file_name().map_or(name.into(), |n| n.to_string_lossy());
         Some(format!("/exports/{file}"))
     }));
     // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: the picker is async, so the
     // hint's command runs once the user has chosen (#111).
-    app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], hint: Option<RelinkHint>| {
+    app.hooks.pick_file_for_relink = Some(Box::new(move |exts: &[&str], hint: Option<RelinkHint>| {
         if hint.is_some() {
-            pick_then(exts, false, hint);
+            if hosted {
+                host_pick("relink", exts, false, hint);
+            } else {
+                pick_then(exts, false, hint);
+            }
         }
         None
     }));

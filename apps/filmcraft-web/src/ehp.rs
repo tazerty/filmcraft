@@ -17,18 +17,25 @@
 //! - **Sending**: always to the admitted origin, never `*`; every `id` is a fresh ULID.
 //! - **Messages**: `evora:ready` (once, before any storage access), `evora:init` (language through
 //!   E3's mapping, theme and accent, storage namespace: other namespaces and upstream's leftovers
-//!   purged first, §7.7 b), `evora:open` (bytes or a new project), `evora:save` (Save of the project
-//!   Evora opened, and the answer to `evora:request-save`), `evora:saved` (checked; the engine does
-//!   not declare `doc.saved-ack`, so the shell keeps its own save state, §6.3), `evora:dirty`,
-//!   `evora:lang`, `evora:theme`, `evora:purge` (OPFS closed first, then erased, then the answer),
-//!   `evora:ack`, and `evora:failed` when the engine cannot start or stops for good: a panic
-//!   (`{code: "panic"}`, from the panic hook, before the wasm traps) or an abort without one, such as
-//!   running out of memory (`{code: "memory"}`, from `index.html`, to the origin admitted here).
+//!   purged first, §7.7 b), `evora:open` (bytes, a signed URL with `media.ranges`, or a new project),
+//!   `evora:save` (Save of the project Evora opened, the answer to `evora:request-save`, and Save As
+//!   as a new document), `evora:saved`, `evora:dirty`, `evora:lang`, `evora:theme`, `evora:purge`
+//!   (OPFS closed first, then erased, then the answer), `evora:ack`, and `evora:failed` when the
+//!   engine cannot start or stops for good: a panic (`{code: "panic"}`, from the panic hook, before
+//!   the wasm traps) or an abort without one, such as running out of memory (`{code: "memory"}`,
+//!   from `index.html`, to the origin admitted here).
 //!
-//! Not here (not declared): media of a project (`media.need`, `media.ranges`), exports to Drive
-//! (`export.drive`), Drive's picker, host commands, `doc.saved-ack`. Inside Evora, a file the app
-//! writes other than the project Evora opened is neither downloaded nor sent: the write fails and the
-//! app says so.
+//! Patch COR-FK-B1 (Evora campaign « suite créative V1 », 2026-10-27) adds the V1 bridge:
+//! - `doc.saved-ack` (COR-02, `ehp_save`): the project is saved when Evora says so, not when its
+//!   bytes are handed over; a change made while they travel keeps it modified; a refusal (409,
+//!   413…) keeps it modified; Save As adopts the new document Evora names (§7.3);
+//! - `export.drive` (COR-03, `ehp_save`): any other file the app writes goes to Evora's Drive
+//!   (`evora:export`), never to a download; without the capability the write fails;
+//! - `command` and `command.catalog` (COR-10, DT-S17, `ehp_commands`);
+//! - `media.need`, `media.ranges`, `pick.drive`, `drop.files` (COR-04, COR-12, COR-15,
+//!   `ehp_media`, `remote`);
+//! - `ui.focus-out` (A-19, `ehp_focus`) and `ui.activity` (A-28: `evora:activity` while an export
+//!   job runs).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -37,19 +44,44 @@ use serde_json::json;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
+pub(crate) use crate::ehp_wire::{get, is_name, is_ulid, object, only_keys, plain_object};
+use crate::ehp_wire::{envelope, is_lang_tag, string_list};
 use crate::opfs;
 
 /// Build slug and protocol version announced in `evora:ready` (§4.4, §10).
 const APP: &str = "corte";
 const EHP: &str = "1.0";
-/// What this engine honours (§9.1), each exercised by the CI smoke test (scenario « pont-ehp »).
-const CAPABILITIES: [&str; 8] = ["doc.open", "doc.save", "doc.dirty", "doc.request-save", "storage.ns", "storage.purge", "live.lang", "live.theme"];
+/// What this engine honours (§9.1; A-19, A-28 and DT-S17 of the 1.1 amendments, which a shell of
+/// minor 0 admits at its ceiling), each exercised by the CI smoke test (scenarios « pont-ehp » and
+/// « pont-v1 »).
+const CAPABILITIES: [&str; 18] = [
+    "doc.open",
+    "doc.save",
+    "doc.saved-ack",
+    "doc.dirty",
+    "doc.request-save",
+    "export.drive",
+    "media.need",
+    "media.ranges",
+    "pick.drive",
+    "command",
+    "command.catalog",
+    "storage.ns",
+    "storage.purge",
+    "live.lang",
+    "live.theme",
+    "ui.focus-out",
+    "ui.activity",
+    "drop.files",
+];
 /// The admitted parent origins, beside `index.html` (§2.3).
 const CONFIG: &str = "evora-host.json";
 /// Evora's languages (§4.2 `lang`).
 const LANGS: [&str; 14] = ["ar", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko", "pt", "ru", "tr", "zh-Hans"];
-/// The capability vocabulary (§4.2 `capability`).
-const CAPABILITY_NAMES: [&str; 18] = [
+/// The capability vocabulary a shell may name (§4.2 `capability`, and the 1.1 amendments the shell
+/// already admits at its ceiling: A-19 `ui.focus-out`, A-28 `ui.activity` and `drop.files`,
+/// DT-S17 `command.catalog`, `prefs.sync`).
+const CAPABILITY_NAMES: [&str; 23] = [
     "doc.open",
     "doc.save",
     "doc.saved-ack",
@@ -68,11 +100,16 @@ const CAPABILITY_NAMES: [&str; 18] = [
     "live.theme",
     "font.inject",
     "author",
+    "ui.focus-out",
+    "ui.activity",
+    "drop.files",
+    "command.catalog",
+    "prefs.sync",
 ];
 /// `evora:request-save` reasons (§4.3).
 const REASONS: [&str; 5] = ["autosave", "visibility", "close", "logout", "user"];
 /// `ackCode` (§4.2).
-const ACK_CODES: [&str; 16] = [
+pub(crate) const ACK_CODES: [&str; 16] = [
     "clean",
     "cancelled",
     "conflict",
@@ -91,39 +128,81 @@ const ACK_CODES: [&str; 16] = [
     "timeout",
 ];
 /// Where the project Evora opened lives in the virtual file table: `/evora/<docRef>/<name>`.
-const DOC_DIR: &str = "/evora";
-/// What the app says when it writes a file inside Evora that is not the project Evora opened.
-const NOT_HERE: &str = "not available inside Evora: only the project opened from Evora is saved, to Evora";
+pub(crate) const DOC_DIR: &str = "/evora";
+/// What the app says when it writes a file inside Evora that the shell cannot take.
+pub(crate) const NOT_HERE: &str = "not available inside Evora: only the project opened from Evora is saved, to Evora";
+/// `evora:need` paths at most per message, unless `evora:init.limits.maxPathsPerNeed` names
+/// another bound: Evora's `creative_ehp_max_paths_per_need` (D-15, 2026-10-24).
+const DEFAULT_MAX_PATHS_PER_NEED: usize = 64;
+/// Bytes of a medium the shell may send inline (`evora:file {bytes}`), unless
+/// `limits.maxMediaBytes` says otherwise: Evora's `creative_ehp_max_media_bytes` (D-15).
+const DEFAULT_MAX_MEDIA_BYTES: f64 = 52_428_800.0;
+/// Files at most per `evora:drop`, unless `limits.maxDropFiles` says otherwise. Evora has no
+/// `{EHP_MAX_DROP_FILES}` yet (A-28): development fallback, the bound of `evora:need`, to be decided.
+const DEFAULT_MAX_DROP_FILES: usize = 64;
+/// Largest `result` of an `evora:command` answer, in JSON bytes: Evora's
+/// `creative_ehp_max_command_result_bytes` (D-15). A larger result is not sent.
+const MAX_COMMAND_RESULT_BYTES: usize = 65_536;
 
 /// The project Evora opened.
 #[derive(Clone)]
-struct HostDoc {
-    doc_ref: String,
-    name: String,
-    path: String,
+pub(crate) struct HostDoc {
+    pub doc_ref: String,
+    pub name: String,
+    pub path: String,
 }
 
-struct State {
-    parent: web_sys::Window,
-    origin: String,
-    ready_id: String,
+/// The bounds of `evora:init.limits` the engine applies.
+#[derive(Clone, Copy)]
+pub(crate) struct Limits {
+    pub max_document: f64,
+    pub max_export: f64,
+    pub max_media: f64,
+    pub max_paths_per_need: usize,
+    pub max_drop_files: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_document: 0.0,
+            max_export: 0.0,
+            max_media: DEFAULT_MAX_MEDIA_BYTES,
+            max_paths_per_need: DEFAULT_MAX_PATHS_PER_NEED,
+            max_drop_files: DEFAULT_MAX_DROP_FILES,
+        }
+    }
+}
+
+pub(crate) struct State {
+    pub parent: web_sys::Window,
+    pub origin: String,
+    pub ready_id: String,
     /// An `evora:init` was accepted (a second one is ignored).
-    initialized: bool,
+    pub initialized: bool,
     /// The effective capabilities: what the shell offers and this engine declares (§9).
-    caps: Vec<String>,
-    max_document: f64,
+    pub caps: Vec<String>,
+    pub limits: Limits,
     /// The account's storage namespace, when `storage.ns` is effective.
-    storage_ns: Option<String>,
-    doc: Option<HostDoc>,
-    /// `id`s of the `evora:save` messages awaiting their `evora:saved`.
-    pending_saves: Vec<String>,
-    last_dirty: Option<bool>,
+    pub storage_ns: Option<String>,
+    pub doc: Option<HostDoc>,
+    /// `evora:save` messages awaiting their `evora:saved` (`ehp_save`).
+    pub saves: Vec<crate::ehp_save::SaveInFlight>,
+    /// A Save As in flight (`evora:save {saveAs: true}`, §7.3).
+    pub save_as: Option<crate::ehp_save::SaveAs>,
+    /// The session's saved revision at the end of the last tick (`doc.saved-ack`).
+    pub prev_saved: Option<u64>,
+    /// `evora:export` ids awaiting their `evora:ack`, with the file's name.
+    pub exports: Vec<(String, String)>,
+    pub last_dirty: Option<bool>,
+    /// The last `evora:activity` state sent (`ui.activity`).
+    pub last_busy: Option<bool>,
     /// Every `id` received (a replay is ignored, §3).
-    seen: HashSet<String>,
+    pub seen: HashSet<String>,
 }
 
 impl State {
-    fn has(&self, capability: &str) -> bool {
+    pub fn has(&self, capability: &str) -> bool {
         self.initialized && self.caps.iter().any(|c| c == capability)
     }
 }
@@ -156,17 +235,22 @@ pub fn connect() {
         on_message.forget();
         report_panics(&parent, &origin);
         install_fault_injection();
+        crate::ehp_focus::listen();
         let mut st = State {
             parent,
             origin,
             ready_id: String::new(),
             initialized: false,
             caps: Vec::new(),
-            max_document: 0.0,
+            limits: Limits::default(),
             storage_ns: None,
             doc: None,
-            pending_saves: Vec::new(),
+            saves: Vec::new(),
+            save_as: None,
+            prev_saved: None,
+            exports: Vec::new(),
             last_dirty: None,
+            last_busy: None,
             seen: HashSet::new(),
         };
         let capabilities = js_sys::Array::new();
@@ -254,70 +338,83 @@ fn install_fault_injection() {
     let _ = js_sys::Reflect::set(&api, &JsValue::from_str("injectPanic"), &inject);
 }
 
-/// After each frame: `evora:dirty` when the project Evora opened gains or loses unsaved changes.
-pub fn tick(session: &filmcraft_engine::Session) {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let Some(st) = s.as_mut() else { return };
-        if !st.has("doc.dirty") {
-            return;
+/// After each frame: the saved state Evora confirmed (`doc.saved-ack`), Save As adopted,
+/// `evora:dirty` when the project Evora opened gains or loses unsaved changes, `evora:activity`
+/// while an export runs, and the command catalog when it changed.
+pub fn tick(session: &mut filmcraft_engine::Session) {
+    let catalog = STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else { return false };
+        let Some(st) = s.as_mut() else { return false };
+        if !st.initialized {
+            return false;
         }
-        let Some(doc_ref) = st.doc.as_ref().filter(|d| session.path.as_deref() == Some(d.path.as_str())).map(|d| d.doc_ref.clone()) else { return };
-        let dirty = session.is_dirty();
-        if st.last_dirty == Some(dirty) {
-            return;
-        }
-        if let Some(payload) = object(&[("dirty", dirty.into()), ("docRef", doc_ref.into())])
-            && send(st, "evora:dirty", None, &payload, None).is_some()
-        {
-            st.last_dirty = Some(dirty);
-        }
+        crate::ehp_save::track(st, session);
+        report_dirty(st, session);
+        report_activity(st, session);
+        st.has("command.catalog")
     });
+    if catalog {
+        crate::ehp_commands::tick(session);
+    }
 }
 
-/// The file-write hook inside Evora (`fs::set_on_write`): the project Evora opened goes to the shell
-/// as `evora:save`; an upgraded project's schema backup is not kept (Drive keeps versions); anything
-/// else fails, never a download.
+/// `evora:dirty {dirty, docRef}` when the state of the project Evora opened changed.
+fn report_dirty(st: &mut State, session: &filmcraft_engine::Session) {
+    if !st.has("doc.dirty") {
+        return;
+    }
+    let shown = session.path.as_deref();
+    let pending_as = st.save_as.as_ref().map(|a| a.temp_path.as_str());
+    let Some(doc_ref) = st.doc.as_ref().filter(|d| shown == Some(d.path.as_str()) || (shown.is_some() && shown == pending_as)).map(|d| d.doc_ref.clone()) else {
+        return;
+    };
+    let dirty = session.is_dirty();
+    if st.last_dirty == Some(dirty) {
+        return;
+    }
+    if let Some(payload) = object(&[("dirty", dirty.into()), ("docRef", doc_ref.into())])
+        && send(st, "evora:dirty", None, &payload, None).is_some()
+    {
+        st.last_dirty = Some(dirty);
+    }
+}
+
+/// `evora:activity {busy, kind: "export"}` (A-28) when an export job starts or ends: the shell
+/// warns before leaving the editor while one runs.
+fn report_activity(st: &mut State, session: &filmcraft_engine::Session) {
+    if !st.has("ui.activity") {
+        return;
+    }
+    let busy = session.jobs.iter().any(|j| j.result.lock().map(|r| r.is_none()).unwrap_or(false));
+    if st.last_busy == Some(busy) {
+        return;
+    }
+    if let Some(payload) = object(&[("busy", busy.into()), ("kind", "export".into())])
+        && send(st, "evora:activity", None, &payload, None).is_some()
+    {
+        st.last_busy = Some(busy);
+    }
+}
+
+/// The file-write hook inside Evora (`fs::set_on_write`, also called by `write_file_new`): the
+/// project goes to the shell as `evora:save`, Save As as a new document, any other file as
+/// `evora:export` (`ehp_save`); never a download.
 pub fn on_write(path: &str, data: &[u8]) -> Result<(), String> {
     STATE.with(|s| {
-        let mut s = s.borrow_mut();
+        let Ok(mut s) = s.try_borrow_mut() else { return Err("Evora is busy".to_string()) };
         let Some(st) = s.as_mut() else { return Err("Evora is not connected".to_string()) };
-        let Some(doc) = st.doc.clone() else { return Err(NOT_HERE.to_string()) };
-        if path != doc.path {
-            if is_schema_backup(path, &doc.path) {
-                log::info!("{path}: not kept inside Evora (the shell keeps the versions)");
-                return Ok(());
-            }
-            return Err(NOT_HERE.to_string());
-        }
-        // This write is the save: it answers the pending `evora:request-save`, if any.
-        let re = SAVE_RE.with(|r| r.borrow_mut().take());
-        if !st.has("doc.save") {
-            REFUSAL.set(Some("capability"));
-            return Err("Evora is not ready to save yet".to_string());
-        }
-        if data.is_empty() || data.len() as f64 > st.max_document {
-            REFUSAL.set(Some("too_large"));
-            return Err("the project is too large to save in Evora".to_string());
-        }
-        let buffer = js_sys::Uint8Array::from(data).buffer();
-        let payload = object(&[
-            ("docRef", doc.doc_ref.into()),
-            ("name", doc.name.into()),
-            ("saveAs", false.into()),
-            ("bytes", buffer.clone().into()),
-        ])
-        .ok_or_else(|| "couldn't build the message".to_string())?;
-        let id = send(st, "evora:save", re.as_deref(), &payload, Some(&buffer)).ok_or_else(|| "couldn't send the project to Evora".to_string())?;
-        st.pending_saves.push(id);
-        Ok(())
+        crate::ehp_save::on_write(st, path, data)
     })
 }
 
-/// `<stem> (schema vN backup).fcproj`, the copy upstream writes before saving an upgraded project.
-fn is_schema_backup(path: &str, doc_path: &str) -> bool {
-    let stem = doc_path.strip_suffix(".fcproj").unwrap_or(doc_path);
-    path.strip_prefix(stem).is_some_and(|rest| rest.starts_with(" (schema v") && rest.ends_with(" backup).fcproj"))
+/// The `id` of the `evora:request-save` the save being written answers (taken once).
+pub(crate) fn take_save_re() -> Option<String> {
+    SAVE_RE.with(|r| r.borrow_mut().take())
+}
+
+/// Why the save being written was refused (an `ackCode`).
+pub(crate) fn refuse(code: &'static str) {
+    REFUSAL.set(Some(code));
 }
 
 /// The parent window and its origin, when the page is framed by an origin `evora-host.json` admits.
@@ -387,19 +484,33 @@ fn receive(event: &web_sys::MessageEvent) {
     }
     let Some(kind) = get(&data, "type").as_string() else { return };
     let capability = match kind.as_str() {
-        "evora:init" => None,
+        "evora:init" | "evora:ack" => None,
         "evora:open" => Some("doc.open"),
         "evora:saved" => Some("doc.save"),
         "evora:request-save" => Some("doc.request-save"),
         "evora:lang" => Some("live.lang"),
         "evora:theme" => Some("live.theme"),
         "evora:purge" => Some("storage.purge"),
+        "evora:command" => Some("command"),
+        // the answer to a need, a picker or a drop (`ehp_media`)
+        "evora:file" => Some("evora:file"),
         // Unknown here, or a capability this engine doesn't declare: ignored (§4.1, §10).
         _ => return,
     };
+    let effective = |c: &str| {
+        STATE.with(|s| {
+            s.borrow().as_ref().is_some_and(|st| match c {
+                "evora:file" => st.has("media.need") || st.has("pick.drive") || st.has("drop.files"),
+                c => st.has(c),
+            })
+        })
+    };
     if let Some(c) = capability
-        && !STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.has(c)))
+        && !effective(c)
     {
+        return;
+    }
+    if kind == "evora:ack" && !STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.initialized)) {
         return;
     }
     if !only_keys(&data, &["v", "type", "id", "re", "payload"]) {
@@ -420,7 +531,7 @@ fn receive(event: &web_sys::MessageEvent) {
         return;
     }
     // Only answers carry `re` (§3, §4.5).
-    let answer = matches!(kind.as_str(), "evora:init" | "evora:saved");
+    let answer = matches!(kind.as_str(), "evora:init" | "evora:saved" | "evora:file" | "evora:ack");
     if answer != re.is_some() {
         return;
     }
@@ -435,6 +546,13 @@ fn receive(event: &web_sys::MessageEvent) {
         "evora:lang" => on_lang(id, &payload),
         "evora:theme" => on_theme(id, &payload),
         "evora:purge" => on_purge(id, &payload),
+        "evora:command" => crate::ehp_commands::on_command(id, &payload),
+        "evora:file" => {
+            if let Some(re) = re.as_deref() {
+                crate::ehp_media::on_file(re, &payload);
+            }
+        }
+        "evora:ack" => on_ack(re.as_deref(), &payload),
         _ => {}
     }
 }
@@ -472,7 +590,7 @@ struct Init {
     accent: String,
     storage_ns: String,
     caps: Vec<String>,
-    max_document: f64,
+    limits: Limits,
 }
 
 fn parse_init(p: &JsValue) -> Option<Init> {
@@ -500,14 +618,27 @@ fn parse_init(p: &JsValue) -> Option<Init> {
     if !pref_values.iter().all(|v| v.as_string().is_some() || v.as_f64().is_some() || v.as_bool().is_some()) {
         return None;
     }
-    let limits = get(p, "limits");
-    let whole = |v: Option<f64>| v.filter(|m| *m >= 1.0 && m.fract() == 0.0);
-    let max_document = whole(get(&limits, "maxDocumentBytes").as_f64())?;
-    whole(get(&limits, "maxExportBytes").as_f64())?;
-    if !plain_object(&limits) || !only_keys(&limits, &["maxDocumentBytes", "maxExportBytes"]) {
+    let limits = parse_limits(&get(p, "limits"))?;
+    Some(Init { language, theme, accent, storage_ns, caps, limits })
+}
+
+/// `limits`: `maxDocumentBytes` and `maxExportBytes` (§4.3), and the bounds of the 1.1 amendment
+/// A-15 a shell may add (`maxMediaBytes`, `maxPathsPerNeed`, `maxDropFiles`); each a whole number ≥ 1.
+fn parse_limits(limits: &JsValue) -> Option<Limits> {
+    let keys = ["maxDocumentBytes", "maxExportBytes", "maxMediaBytes", "maxPathsPerNeed", "maxDropFiles"];
+    if !plain_object(limits) || !only_keys(limits, &keys) {
         return None;
     }
-    Some(Init { language, theme, accent, storage_ns, caps, max_document })
+    let whole = |key: &str| get(limits, key).as_f64().filter(|m| *m >= 1.0 && m.fract() == 0.0);
+    let optional = |key: &str| if get(limits, key).is_undefined() { Some(None) } else { whole(key).map(Some) };
+    let defaults = Limits::default();
+    Some(Limits {
+        max_document: whole("maxDocumentBytes")?,
+        max_export: whole("maxExportBytes")?,
+        max_media: optional("maxMediaBytes")?.unwrap_or(defaults.max_media),
+        max_paths_per_need: optional("maxPathsPerNeed")?.map_or(defaults.max_paths_per_need, |n| n as usize),
+        max_drop_files: optional("maxDropFiles")?.map_or(defaults.max_drop_files, |n| n as usize),
+    })
 }
 
 /// `evora:init`: language, theme and accent go to the UI thread (applied before any later request is
@@ -525,8 +656,10 @@ fn on_init(id: String, re: Option<&str>, p: &JsValue) {
         if let Some(st) = s.borrow_mut().as_mut() {
             st.initialized = true;
             st.caps = caps;
-            st.max_document = init.max_document;
+            st.limits = init.limits;
             st.storage_ns = namespace.then(|| init.storage_ns.clone());
+            // no export runs yet: `evora:activity` reports the first start
+            st.last_busy = Some(false);
         }
     });
     let values = json!({
@@ -550,6 +683,9 @@ fn on_init(id: String, re: Option<&str>, p: &JsValue) {
         crate::set_info("storage", json!(opfs::describe()));
         crate::set_info("opfs", json!(opfs::available()));
         ack(&id, ok, (!ok).then_some("busy"));
+        // the catalog follows the answer (`command.catalog`)
+        crate::ehp_commands::mark_dirty();
+        crate::post(|_, _| {});
     });
 }
 
@@ -564,7 +700,8 @@ fn apply_prefs(w: &mut crate::WebApp, values: &serde_json::Value) {
     }
 }
 
-/// `evora:open`: a project in bytes (opened at `/evora/<docRef>/<name>`) or a new one.
+/// `evora:open`: a project in bytes or at a signed URL (`media.ranges`), opened at
+/// `/evora/<docRef>/<name>`, or a new one.
 fn on_open(id: String, p: &JsValue) {
     if !only_keys(p, &["docRef", "name", "bytes", "url", "new"]) {
         return;
@@ -575,14 +712,27 @@ fn on_open(id: String, p: &JsValue) {
     if [&bytes, &url, &new].iter().filter(|v| !v.is_undefined()).count() != 1 {
         return;
     }
+    let doc = HostDoc { path: format!("{DOC_DIR}/{doc_ref}/{name}"), doc_ref, name };
     if !url.is_undefined() {
-        // A signed URL needs `media.ranges`, which this engine doesn't declare.
-        if url.as_string().is_some() {
+        let Some(url) = url.as_string().filter(|u| u.starts_with("https://") || u.starts_with("http://")) else { return };
+        // A signed URL needs `media.ranges` (exception A4).
+        if !has("media.ranges") {
             ack(&id, false, Some("capability"));
+            return;
         }
+        let max = limits().max_document;
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::remote::get_whole(&url, max).await {
+                Ok(data) => open_bytes(id, doc, data),
+                Err(crate::remote::RangeError::Expired) => ack(&id, false, Some("forbidden")),
+                Err(crate::remote::RangeError::Other(e)) => {
+                    log::warn!("project from Evora by URL: {e}");
+                    ack(&id, false, Some("network"));
+                }
+            }
+        });
         return;
     }
-    let doc = HostDoc { path: format!("{DOC_DIR}/{doc_ref}/{name}"), doc_ref, name };
     if !new.is_undefined() {
         if new.as_bool() != Some(true) {
             return;
@@ -594,7 +744,7 @@ fn on_open(id: String, p: &JsValue) {
                     // nothing to save yet: the new project is the host's document
                     w.app.session.path = Some(doc.path.clone());
                     w.app.session.saved_revision = w.app.session.revision;
-                    opened(&id, doc, &w.app.session);
+                    opened(&id, doc, &mut w.app.session);
                 }
                 Err(e) => {
                     log::warn!("new project from Evora: {e}");
@@ -612,15 +762,19 @@ fn on_open(id: String, p: &JsValue) {
     if length < 1.0 {
         return;
     }
-    if STATE.with(|s| s.borrow().as_ref().is_none_or(|st| length > st.max_document)) {
+    if STATE.with(|s| s.borrow().as_ref().is_none_or(|st| length > st.limits.max_document)) {
         ack(&id, false, Some("too_large"));
         return;
     }
-    let data = js_sys::Uint8Array::new(&bytes).to_vec();
+    open_bytes(id, doc, js_sys::Uint8Array::new(&bytes).to_vec());
+}
+
+/// Open the project's bytes at the document's path, on the UI thread.
+fn open_bytes(id: String, doc: HostDoc, data: Vec<u8>) {
     crate::post(move |w, _| {
         crate::fs::put(&doc.path, data);
         match w.app.session.execute("file.open", json!({ "path": doc.path.clone() })) {
-            Ok(_) => opened(&id, doc, &w.app.session),
+            Ok(_) => opened(&id, doc, &mut w.app.session),
             Err(e) => {
                 log::warn!("project from Evora: {e}");
                 ack(&id, false, Some("invalid_content"));
@@ -629,27 +783,37 @@ fn on_open(id: String, p: &JsValue) {
     });
 }
 
-/// The project is open: remember it, answer, then report its state (§7.1 step 8).
-fn opened(id: &str, doc: HostDoc, session: &filmcraft_engine::Session) {
+/// The project is open: remember it (any save of the previous one is forgotten), answer, report
+/// its state (§7.1 step 8), then ask for the media it names that the engine doesn't have (§7.5).
+fn opened(id: &str, doc: HostDoc, session: &mut filmcraft_engine::Session) {
+    let doc_ref = doc.doc_ref.clone();
     STATE.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
             st.doc = Some(doc);
             st.last_dirty = None;
+            st.saves.clear();
+            st.save_as = None;
+            st.prev_saved = Some(session.saved_revision);
         }
     });
     ack(id, true, None);
     tick(session);
+    crate::ehp_media::need_missing(&doc_ref, session);
+    crate::ehp_commands::mark_dirty();
 }
 
-/// `evora:saved`: checked against the save it answers. Without `doc.saved-ack` the engine keeps
-/// upstream's behaviour (saved once handed over) and the shell shows its own save state (§6.3).
+/// `evora:saved`: checked against the save it answers. With `doc.saved-ack`, the next tick marks
+/// the project saved (or keeps it modified) and Save As adopts the new document (`ehp_save`);
+/// without it the engine keeps upstream's behaviour (saved once handed over) and the shell shows
+/// its own save state (§6.3).
 fn on_saved(re: Option<&str>, p: &JsValue) {
     let Some(re) = re else { return };
     if !only_keys(p, &["ok", "version", "docRef", "error"]) {
         return;
     }
     let (version, doc_ref, error) = (get(p, "version"), get(p, "docRef"), get(p, "error"));
-    let valid = match get(p, "ok").as_bool() {
+    let ok = get(p, "ok").as_bool();
+    let valid = match ok {
         Some(true) => {
             version.as_f64().is_some_and(|v| v >= 1.0 && v.fract() == 0.0)
                 && error.is_undefined()
@@ -661,11 +825,11 @@ fn on_saved(re: Option<&str>, p: &JsValue) {
     if !valid {
         return;
     }
-    STATE.with(|s| {
-        if let Some(st) = s.borrow_mut().as_mut() {
-            st.pending_saves.retain(|id| id != re);
-        }
-    });
+    let answered = STATE.with(|s| s.borrow_mut().as_mut().is_some_and(|st| crate::ehp_save::answered(st, re, ok == Some(true), doc_ref.as_string())));
+    if answered {
+        // the next tick applies it, even in an iframe that gets no frame
+        crate::post(|_, _| {});
+    }
 }
 
 /// `evora:request-save`: `evora:save` (with `re`) when the project Evora opened has unsaved
@@ -716,6 +880,9 @@ fn on_lang(id: String, p: &JsValue) {
     wasm_bindgen_futures::spawn_local(async move {
         set_prefs(json!({ "general.interfaceLanguage": language })).await;
         ack(&id, true, None);
+        // the catalog's labels follow the language (`command.catalog`)
+        crate::ehp_commands::mark_dirty();
+        crate::post(|_, _| {});
     });
 }
 
@@ -756,7 +923,45 @@ fn on_purge(id: String, p: &JsValue) {
     });
 }
 
-fn ack(re: &str, ok: bool, code: Option<&str>) {
+/// `evora:ack` from the shell (§4.5): the answer to an `evora:export` (its message on the canvas),
+/// or the close of a need, a picker or a drop (`ehp_media`). An unknown `re` is ignored.
+fn on_ack(re: Option<&str>, p: &JsValue) {
+    let Some(re) = re else { return };
+    if !only_keys(p, &["ok", "code", "result"]) {
+        return;
+    }
+    let Some(ok) = get(p, "ok").as_bool() else { return };
+    let code = get(p, "code");
+    let code = if code.is_undefined() {
+        None
+    } else {
+        match code.as_string().filter(|c| ACK_CODES.contains(&c.as_str())) {
+            Some(c) => Some(c),
+            None => return,
+        }
+    };
+    if !ok && code.is_none() {
+        return;
+    }
+    let export = STATE.with(|s| {
+        s.borrow_mut().as_mut().and_then(|st| {
+            let i = st.exports.iter().position(|(id, _)| id == re)?;
+            Some(st.exports.remove(i).1)
+        })
+    });
+    if let Some(name) = export {
+        let message = if ok {
+            format!("Sent to Evora's Drive: {name}")
+        } else {
+            format!("{name} could not be sent to Evora's Drive ({})", code.unwrap_or_default())
+        };
+        crate::post(move |w, _| w.app.status(message));
+        return;
+    }
+    crate::ehp_media::on_ack(re, ok, code);
+}
+
+pub(crate) fn ack(re: &str, ok: bool, code: Option<&str>) {
     let mut fields: Vec<(&str, JsValue)> = vec![("ok", ok.into())];
     if let Some(code) = code {
         fields.push(("code", code.into()));
@@ -770,8 +975,24 @@ fn ack(re: &str, ok: bool, code: Option<&str>) {
     }
 }
 
+/// `evora:ack {ok: true, result}` answering an `evora:command` (§4.5): the command's result, when
+/// it is within [`MAX_COMMAND_RESULT_BYTES`] of JSON.
+pub(crate) fn ack_result(re: &str, result: &serde_json::Value) {
+    let mut fields: Vec<(&str, JsValue)> = vec![("ok", true.into())];
+    if !result.is_null() && result.to_string().len() <= MAX_COMMAND_RESULT_BYTES {
+        fields.push(("result", crate::api::to_js(result)));
+    }
+    if let Some(payload) = object(&fields) {
+        STATE.with(|s| {
+            if let Some(st) = s.borrow().as_ref() {
+                let _ = send(st, "evora:ack", Some(re), &payload, None);
+            }
+        });
+    }
+}
+
 /// Post a message to the admitted parent origin; returns its `id`.
-fn send(st: &State, kind: &str, re: Option<&str>, payload: &js_sys::Object, transfer: Option<&JsValue>) -> Option<String> {
+pub(crate) fn send(st: &State, kind: &str, re: Option<&str>, payload: &js_sys::Object, transfer: Option<&JsValue>) -> Option<String> {
     let (message, id) = envelope(kind, re, payload)?;
     let sent = match transfer {
         Some(t) => st.parent.post_message_with_transfer(&message, &st.origin, &js_sys::Array::of1(t)),
@@ -780,88 +1001,33 @@ fn send(st: &State, kind: &str, re: Option<&str>, payload: &js_sys::Object, tran
     sent.ok().map(|()| id)
 }
 
-fn envelope(kind: &str, re: Option<&str>, payload: &js_sys::Object) -> Option<(js_sys::Object, String)> {
-    let id = ulid();
-    let mut fields: Vec<(&str, JsValue)> = vec![("v", 1.0.into()), ("type", kind.into()), ("id", id.clone().into())];
-    if let Some(re) = re {
-        fields.push(("re", re.into()));
-    }
-    fields.push(("payload", payload.clone().into()));
-    Some((object(&fields)?, id))
+/// [`send`] from outside the bridge's state (once `evora:init` is accepted).
+pub(crate) fn post_message(kind: &str, re: Option<&str>, payload: &js_sys::Object, transfer: Option<&JsValue>) -> Option<String> {
+    STATE.with(|s| s.try_borrow().ok().and_then(|s| s.as_ref().filter(|st| st.initialized).and_then(|st| send(st, kind, re, payload, transfer))))
 }
 
-fn object(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
-    let m = js_sys::Object::new();
-    for (key, value) in fields {
-        js_sys::Reflect::set(&m, &JsValue::from_str(key), value).ok()?;
-    }
-    Some(m)
+/// A capability is effective (§9).
+pub(crate) fn has(capability: &str) -> bool {
+    STATE.with(|s| s.try_borrow().ok().is_some_and(|s| s.as_ref().is_some_and(|st| st.has(capability))))
 }
 
-fn get(data: &JsValue, key: &str) -> JsValue {
-    if !data.is_object() {
-        return JsValue::UNDEFINED;
-    }
-    js_sys::Reflect::get(data, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
+/// The document Evora opened.
+pub(crate) fn current_doc_ref() -> Option<String> {
+    STATE.with(|s| s.try_borrow().ok().and_then(|s| s.as_ref().and_then(|st| st.doc.as_ref().map(|d| d.doc_ref.clone()))))
 }
 
-/// A plain object: not null, not an array, prototype `Object.prototype` (§5.2 step 2).
-fn plain_object(v: &JsValue) -> bool {
-    if !v.is_object() || js_sys::Array::is_array(v) {
-        return false;
-    }
-    let plain = js_sys::Object::get_prototype_of(&js_sys::Object::new().into());
-    js_sys::Object::is(&js_sys::Object::get_prototype_of(v), &plain)
+/// The bounds of `evora:init` (defaults before it).
+pub(crate) fn limits() -> Limits {
+    STATE.with(|s| s.try_borrow().ok().and_then(|s| s.as_ref().map(|st| st.limits)).unwrap_or_default())
 }
 
-/// No property outside `allowed` (`additionalProperties: false`).
-fn only_keys(v: &JsValue, allowed: &[&str]) -> bool {
-    if !v.is_object() {
-        return false;
-    }
-    js_sys::Object::keys(v.unchecked_ref::<js_sys::Object>()).iter().all(|k| k.as_string().is_some_and(|k| allowed.contains(&k.as_str())))
-}
-
-/// An array of distinct strings.
-fn string_list(v: &JsValue) -> Option<Vec<String>> {
-    if !js_sys::Array::is_array(v) {
-        return None;
-    }
-    let list: Vec<String> = js_sys::Array::from(v).iter().map(|x| x.as_string()).collect::<Option<Vec<_>>>()?;
-    let mut unique = list.clone();
-    unique.sort();
-    unique.dedup();
-    (unique.len() == list.len()).then_some(list)
-}
-
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-fn is_ulid(s: &str) -> bool {
-    s.len() == 26 && s.bytes().all(|b| CROCKFORD.contains(&b))
-}
-
-/// A fresh ULID: 48 bits of milliseconds, then 80 random bits (§3: unique per sender).
-fn ulid() -> String {
-    let mut time = js_sys::Date::now() as u64;
-    let mut out = [b'0'; 26];
-    for slot in out.iter_mut().take(10).rev() {
-        *slot = CROCKFORD[(time % 32) as usize];
-        time /= 32;
-    }
-    for slot in out.iter_mut().skip(10) {
-        *slot = CROCKFORD[((js_sys::Math::random() * 32.0) as usize) % 32];
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// `name` of §4.2: 1 to 255 characters, no `/`, `\` or control character.
-fn is_name(n: &str) -> bool {
-    (1..=255).contains(&n.chars().count()) && !n.chars().any(|c| c == '/' || c == '\\' || c.is_control())
-}
-
-/// `engineLang` of §4.2: `^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*$`.
-fn is_lang_tag(tag: &str) -> bool {
-    let mut parts = tag.split(['-', '_']);
-    let first_ok = parts.next().is_some_and(|p| (2..=3).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()));
-    first_ok && parts.all(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
+/// `evora:focus-out {}` (A-19, §7.9): the user asked, at the keyboard, to leave the engine. Only
+/// with `ui.focus-out` effective; `false` when not sent.
+pub(crate) fn focus_out() -> bool {
+    STATE.with(|s| {
+        let Ok(s) = s.try_borrow() else { return false };
+        let Some(st) = s.as_ref().filter(|st| st.has("ui.focus-out")) else { return false };
+        let Some(payload) = object(&[]) else { return false };
+        send(st, "evora:focus-out", None, &payload, None).is_some()
+    })
 }
