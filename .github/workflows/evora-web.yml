@@ -36,7 +36,8 @@ concurrency:
 env:
   # Pas de rust-toolchain(.toml) dans le dépôt : stable épinglée, au moins rust-version (1.95) du
   # Cargo.toml ; 1.99.1 est la version qui a produit la release web officielle 0.9.0 (job
-  # « release / Web (wasm) » 117564532615 du run 39087504990 de l'amont).
+  # « release / Web (wasm) » 117564532615 du run 39087504990 de l'amont) et la release 0.13.0 (job
+  # 121181876963 du run 40197622961, rustc 1.99.1 relevé dans son journal le 2026-10-27).
   RUST_TOOLCHAIN: "1.99.1"
   # Doit être exactement WASM_BINDGEN de xtask/src/main.rs (vérifié plus bas).
   WASM_BINDGEN_VERSION: "0.2.129"
@@ -415,7 +416,9 @@ jobs:
 
       - name: Liens à l'écran (test d'interface sans GPU)
         shell: bash
-        run: cargo test --locked -p filmcraft-ui-egui --test links_ui
+        # Depuis la v0.13.0, les tests d'interface d'ui-egui forment un seul binaire (`tests/it/`) :
+        # seul le module links_ui y est joué.
+        run: cargo test --locked -p filmcraft-ui-egui --test it -- links_ui::
 
   publish:
     name: Publication (artefact au nom Evora, portes et tests verts)
