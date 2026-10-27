@@ -156,8 +156,11 @@ mod tests {
         assert_eq!(Language::En.tr("✓ Enable"), "Enable (on)");
         assert_eq!(Language::Fr.tr("✔ matches"), "Correspond");
         assert_eq!(Language::Es.tr("✖ different file"), "Archivo distinto");
-        // no German entry for this string: the corrected English text, not the raw source
-        assert_eq!(Language::De.tr("✓ Enable"), "Enable (on)");
+        // German has its own entry since the complete upstream catalog (v0.13.0, EVORA-COR-28)
+        assert_eq!(Language::De.tr("✓ Enable"), "Aktivieren (an)");
+        // no Indonesian entry for this string in the overrides: the catalog's own text, or else the
+        // corrected English text, never the raw source
+        assert!(!Language::Id.tr("✓ Enable").contains('✓'));
         // everything else is unchanged
         assert_eq!(Language::Es.tr("File"), "Archivo");
         assert_eq!(Language::En.tr("File"), "File");
@@ -166,7 +169,7 @@ mod tests {
         assert_eq!(Language::En.tr("Lumetri Color"), "Color Grading");
         assert_eq!(Language::Fr.tr("Lumetri Scopes"), "Oscilloscopes vidéo");
         assert_eq!(Language::Ru.tr("Lumetri Color"), "Цветокоррекция");
-        assert_eq!(Language::De.tr("Lumetri Presets"), "Color Grading Presets");
+        assert_eq!(Language::De.tr("Lumetri Presets"), "Farbgradierungs-Vorgaben");
         assert_eq!(Language::Ja.tr("Premiere Pro Compatible"), "Standard NLE Layout");
     }
 
