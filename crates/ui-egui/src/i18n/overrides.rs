@@ -4,9 +4,43 @@
 //! language, and falls back to the English override before the source text itself. The upstream
 //! catalogs stay untouched (they rebase cleanly); only what the interface displays changes: no
 //! emoji or pictograph (E10), and neutral names instead of third-party product names (E9).
+//!
+//! Patch COR-FK-B2 (Q10): the app's name. Whatever the language, a displayed string that names the
+//! upstream app ([`UPSTREAM_NAME`]) names Corte instead ([`rename`], applied by `Language::tr` after
+//! the lookup). Identifiers, the `window.filmcraft` API, file formats and the licence files (never
+//! drawn through `tr`) keep the upstream name.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+
+/// The upstream app's name, as the catalogs write it.
+pub const UPSTREAM_NAME: &str = "FilmCraft";
+/// The name this build shows instead.
+pub const SHOWN_NAME: &str = "Corte";
+
+thread_local! {
+    /// Displayed text → the same text with Corte's name, made once per text (the interface asks
+    /// for the same strings every frame).
+    static RENAMED: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
+}
+
+/// `text` as this build shows it: with Corte's name instead of the upstream app's. Text without
+/// the upstream name (almost all) comes back as it is, without a lookup.
+pub fn rename(text: &str) -> &str {
+    if !text.contains(UPSTREAM_NAME) {
+        return text;
+    }
+    RENAMED.with(|cache| -> &'static str {
+        let mut cache = cache.borrow_mut();
+        if let Some(&shown) = cache.get(text) {
+            return shown;
+        }
+        let shown: &'static str = Box::leak(text.replace(UPSTREAM_NAME, SHOWN_NAME).into_boxed_str());
+        cache.insert(text.to_string(), shown);
+        shown
+    })
+}
 
 /// Source text → [(language code, text to display)].
 type Table = HashMap<String, Vec<(String, String)>>;
@@ -38,6 +72,7 @@ pub fn lookup(code: &str, text: &str) -> (Option<&'static str>, Option<&'static 
 #[cfg(test)]
 mod tests {
     use super::super::{Language, catalog};
+    use super::UPSTREAM_NAME;
 
     /// Emoji and pictographs the interface must not display (Evora rule "zéro émoji d'interface"):
     /// Miscellaneous Symbols and Dingbats (✓ ✔ ✖ ⚠ ⚡ ⚙ ★ ♪…), pictographs U+1F000–1FAFF, symbols
@@ -121,7 +156,24 @@ mod tests {
     /// Third-party product names the interface must not display (D-16), matched as words.
     fn sensitive(text: &str) -> Option<&'static str> {
         let lower = text.to_lowercase();
-        ["lumetri", "lightroom", "acrobat", "premiere", "adobe", "cycore"].into_iter().find(|t| {
+        [
+            "lumetri",
+            "lightroom",
+            "acrobat",
+            "premiere",
+            "adobe",
+            "cycore",
+            // patch COR-FK-B2: E9 completed (panels, effects, a transition, shortcut presets)
+            "essential graphics",
+            "essential sound",
+            "warp stabilizer",
+            "ultra key",
+            "morph cut",
+            "media composer",
+            "final cut pro compatible",
+        ]
+        .into_iter()
+        .find(|t| {
             lower.match_indices(t).any(|(i, _)| {
                 let before = lower[..i].chars().next_back();
                 let after = lower[i + t.len()..].chars().next();
@@ -143,12 +195,33 @@ mod tests {
                 if let Some(t) = sensitive(text) {
                     shown.push(format!("{} [{t}]: {src:?} → {text:?}", lang.code()));
                 }
+                // Q10 (patch COR-FK-B2): the upstream app's name is never shown
+                if text.contains(UPSTREAM_NAME) {
+                    shown.push(format!("{} [{UPSTREAM_NAME}]: {src:?} → {text:?}", lang.code()));
+                }
             }
         }
         assert!(shown.is_empty(), "sensitive terms displayed: {shown:#?}");
         // matched as words: "Volumetric Rays" is not "Lumetri"
         assert_eq!(sensitive("Volumetric Rays"), None);
         assert_eq!(sensitive("Lumetri-Farbe"), Some("lumetri"));
+        assert_eq!(sensitive("Ultra Keyframes"), None);
+        assert_eq!(sensitive("The Morph Cut transition"), Some("morph cut"));
+    }
+
+    /// Q10 (patch COR-FK-B2): the app is called Corte on screen, in every language.
+    #[test]
+    fn the_app_is_called_corte_on_screen() {
+        assert_eq!(Language::En.tr("About FilmCraft"), "About Corte");
+        assert_eq!(Language::En.tr("Quit FilmCraft"), "Quit Corte");
+        for lang in Language::ALL {
+            let about = lang.tr("About FilmCraft");
+            assert!(!about.contains(UPSTREAM_NAME) && about.contains(super::SHOWN_NAME), "{}: {about:?}", lang.code());
+        }
+        // text without the name is returned as it is; renamed text is made once
+        assert_eq!(super::rename("File"), "File");
+        assert!(std::ptr::eq(super::rename("FilmCraft Project"), super::rename("FilmCraft Project")));
+        assert_eq!(super::rename("FilmCraft Project"), "Corte Project");
     }
 
     #[test]
@@ -171,6 +244,13 @@ mod tests {
         assert_eq!(Language::Ru.tr("Lumetri Color"), "Цветокоррекция");
         assert_eq!(Language::De.tr("Lumetri Presets"), "Farbgradierungs-Vorgaben");
         assert_eq!(Language::Ja.tr("Premiere Pro Compatible"), "Standard NLE Layout");
+        // patch COR-FK-B2: E9 completed, a name of Corte's own where the catalog kept the product's
+        assert_eq!(Language::En.tr("Essential Graphics"), "Graphics Editor");
+        assert_eq!(Language::De.tr("Essential Sound"), "Audio-Assistent");
+        assert_eq!(Language::Fr.tr("Ultra Key"), "Incrustation chromatique");
+        assert_eq!(Language::Ru.tr("Warp Stabilizer"), "Стабилизатор");
+        assert_eq!(Language::Id.tr("Morph Cut"), "Potongan Lompat Halus");
+        assert_eq!(Language::Es.tr("Avid Media Composer Compatible"), "Alternative Layout B");
     }
 
     /// E10, checked on the strings as `Language::tr` returns them, in every language.

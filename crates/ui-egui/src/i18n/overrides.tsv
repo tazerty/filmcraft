@@ -136,6 +136,88 @@ en	Lumetri Section	Color Grading Section
 # Keyboard shortcut preset (engine constant PREMIERE_PRESET), shown through i18n::t by the
 # shortcuts editor (Evora exception E9-L5 in panels/shortcuts_dialog.rs).
 en	Premiere Pro Compatible	Standard NLE Layout
+# Patch COR-FK-B2 (E9 completed, CO-FK-6): the other third-party product names the interface
+# shows (panels, effects, a transition), each with a name of Corte's own in every language; the
+# identifiers (panel ids, effect ids, command ids) are unchanged.
+en	Essential Graphics	Graphics Editor
+es	Essential Graphics	Editor de gráficos
+fr	Essential Graphics	Éditeur graphique
+id	Essential Graphics	Editor Grafis
+ja	Essential Graphics	グラフィックエディター
+pt-br	Essential Graphics	Editor de gráficos
+zh-cn	Essential Graphics	图形编辑器
+de	Essential Graphics	Grafikeditor
+ru	Essential Graphics	Редактор графики
+uk	Essential Graphics	Редактор графіки
+it	Essential Graphics	Editor grafico
+ko	Essential Graphics	그래픽 편집기
+en	Essential Sound	Audio Assistant
+es	Essential Sound	Asistente de audio
+fr	Essential Sound	Assistant audio
+id	Essential Sound	Asisten Audio
+ja	Essential Sound	オーディオアシスタント
+pt-br	Essential Sound	Assistente de áudio
+zh-cn	Essential Sound	音频助手
+de	Essential Sound	Audio-Assistent
+ru	Essential Sound	Аудиоассистент
+uk	Essential Sound	Аудіоасистент
+it	Essential Sound	Assistente audio
+ko	Essential Sound	오디오 도우미
+en	EssentialSound	Audio Assistant
+es	EssentialSound	Asistente de audio
+fr	EssentialSound	Assistant audio
+id	EssentialSound	Asisten Audio
+ja	EssentialSound	オーディオアシスタント
+pt-br	EssentialSound	Assistente de áudio
+zh-cn	EssentialSound	音频助手
+de	EssentialSound	Audio-Assistent
+ru	EssentialSound	Аудиоассистент
+uk	EssentialSound	Аудіоасистент
+it	EssentialSound	Assistente audio
+ko	EssentialSound	오디오 도우미
+en	Warp Stabilizer	Stabilizer
+es	Warp Stabilizer	Estabilizador
+fr	Warp Stabilizer	Stabilisateur
+id	Warp Stabilizer	Stabilisator
+ja	Warp Stabilizer	スタビライザー
+pt-br	Warp Stabilizer	Estabilizador
+zh-cn	Warp Stabilizer	稳定器
+de	Warp Stabilizer	Stabilisierung
+ru	Warp Stabilizer	Стабилизатор
+uk	Warp Stabilizer	Стабілізатор
+it	Warp Stabilizer	Stabilizzatore
+ko	Warp Stabilizer	안정기
+en	Ultra Key	Chroma Key
+es	Ultra Key	Clave de croma
+fr	Ultra Key	Incrustation chromatique
+id	Ultra Key	Kunci Kroma
+ja	Ultra Key	クロマキー
+pt-br	Ultra Key	Chroma key
+zh-cn	Ultra Key	色度抠像
+de	Ultra Key	Chroma-Key
+ru	Ultra Key	Хромакей
+uk	Ultra Key	Хромакей
+it	Ultra Key	Chiave cromatica
+ko	Ultra Key	크로마 키
+en	Morph Cut	Smooth Jump Cut
+es	Morph Cut	Corte de salto suave
+fr	Morph Cut	Raccord lissé
+id	Morph Cut	Potongan Lompat Halus
+ja	Morph Cut	スムーズジャンプカット
+pt-br	Morph Cut	Corte seco suavizado
+zh-cn	Morph Cut	平滑跳切
+de	Morph Cut	Weicher Sprungschnitt
+ru	Morph Cut	Сглаженная склейка
+uk	Morph Cut	Згладжена склейка
+it	Morph Cut	Jump cut levigato
+ko	Morph Cut	부드러운 점프 컷
+# Engine command labels and built-in shortcut presets, shown through i18n::t (keyboard shortcuts
+# editor); untranslated upstream, so English only. The presets named after other editors are not
+# offered by the shortcuts editor either (E9-L5).
+en	Inspect Essential Sound	Inspect Audio Assistant
+en	Essential Sound Setting	Audio Assistant Setting
+en	Final Cut Pro Compatible	Alternative Layout A
+en	Avid Media Composer Compatible	Alternative Layout B
 
 # --- E7: links to the outside are not opened in Evora (apps/filmcraft-web: open_url hook) --------
 # The status line must not claim a link was opened.

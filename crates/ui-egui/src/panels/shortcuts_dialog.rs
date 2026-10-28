@@ -210,7 +210,16 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     let presets = app.session.execute("shortcuts.presets", json!({})).unwrap_or_default();
     let active = presets["active"].as_str().unwrap_or("").to_string();
     let modified = presets["modified"].as_bool().unwrap_or(false);
-    let builtin: Vec<String> = presets["builtin"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    // Evora fork (E9-L5, patch COR-FK-B2): the built-in presets named after other editors are not
+    // offered, only the engine's own default (`shortcuts.loadPreset` still takes them, as upstream)
+    let third_party = [filmcraft_engine::shortcuts::PREMIERE_PRESET, filmcraft_engine::shortcuts::FCP_PRESET, filmcraft_engine::shortcuts::AVID_PRESET];
+    let builtin: Vec<String> = presets["builtin"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .filter(|n| !third_party.contains(&n.as_str()))
+        .collect();
     let custom: Vec<String> = presets["custom"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Preset:")).size(13.0).color(t.text_dim));

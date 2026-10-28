@@ -200,9 +200,11 @@ impl Language {
     ///
     /// Evora fork (E10, E9): the display override catalog (`overrides.tsv`) comes first for the
     /// language, then the upstream catalog, then the English override (the corrected source text).
+    /// Patch COR-FK-B2 (Q10): the text found names Corte, not the upstream app.
     pub fn tr(self, text: &str) -> &str {
         let (own, english) = overrides::lookup(self.code(), text);
-        own.or_else(|| self.catalog().and_then(|c| c.plain(text))).or(english).unwrap_or(text)
+        let shown = own.or_else(|| self.catalog().and_then(|c| c.plain(text))).or(english).unwrap_or(text);
+        overrides::rename(shown)
     }
 
     /// Does this language's catalog translate `text`? (English never does: it is the source.)
@@ -242,7 +244,11 @@ pub fn matches_query(text: &str, query: &str) -> bool {
 /// first column is that context); falls back to the context-free translation.
 pub fn tr_ctx<'a>(context: &str, text: &'a str) -> &'a str {
     let lang = current();
-    lang.catalog().and_then(|c| c.contextual(context, text)).unwrap_or_else(|| lang.tr(text))
+    match lang.catalog().and_then(|c| c.contextual(context, text)) {
+        // Evora fork (patch COR-FK-B2, Q10): Corte's name, as for `tr`
+        Some(shown) => overrides::rename(shown),
+        None => lang.tr(text),
+    }
 }
 
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.

@@ -87,8 +87,10 @@ fn project_links_without_artcraft_marks() {
     }
     let menu = d.ok("ui.menu.list", json!({}));
     let text = menu.to_string();
+    // Evora fork (patch COR-FK-B2, Q10): the menu shows each label as displayed (Corte's name)
     for (id, label, _) in links::ALL {
-        assert!(text.contains(id) && text.contains(label), "Help menu lists {id}");
+        let shown = filmcraft_ui_egui::i18n::Language::En.tr(label);
+        assert!(text.contains(id) && text.contains(shown), "Help menu lists {id}");
     }
     for (id, label, url) in links::ALL {
         assert!(!label.contains("ArtCraft") && !url.contains("artcraft") && !url.contains("discord"), "{id}");

@@ -455,7 +455,9 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     use crate::links;
     let t = app.tokens;
     ui.set_width(380.0);
-    ui.heading("FilmCraft");
+    // Evora fork (E1-L5, patch COR-FK-B2, Q10): the heading names the app as the catalogs do, so
+    // that this build shows its own name (i18n::t), not a literal the display override cannot reach
+    ui.heading(crate::i18n::t("FilmCraft"));
     ui.label(tlf!("Version {version}", version = env!("CARGO_PKG_VERSION")));
     ui.label(tl!("A clean-room, pure-Rust non-linear video editor."));
     ui.add_space(10.0);
