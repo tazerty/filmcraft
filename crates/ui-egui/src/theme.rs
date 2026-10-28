@@ -8,6 +8,11 @@ use std::sync::Arc;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 
+// Evora fork (patch COR-FK-B2, exception E2-L5): Evora's palette for Corte inside Evora's shell,
+// turned on by the host; the themes below are unchanged while it is off.
+mod evora;
+pub use evora::{EVORA_ACCENT, FOCUS_MIN, MONITOR, TEXT_MIN, contrast, evora_enabled, in_palette, luminance, set_evora};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeKind {
     /// Premiere-style darkest (default).
@@ -241,7 +246,7 @@ impl Tokens {
             gap: 4.0,
             tab_h: 32.0,
         };
-        match kind {
+        let tokens = match kind {
             ThemeKind::Dark => dark,
             ThemeKind::Medium => Tokens {
                 app_bg: Color32::from_rgb(20, 20, 20),
@@ -330,13 +335,19 @@ impl Tokens {
                 tl_ruler_text: Color32::from_rgb(80, 80, 80),
                 ..dark
             },
-        }
+        };
+        // Evora fork (E2-L5): Evora's chrome when the host asks for it
+        if evora::evora_enabled() { evora::chrome(tokens) } else { tokens }
     }
 
     /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, primary buttons,
     /// the focus outline, the playhead, timecodes, drag values and track targeting) and accessible
     /// colour contrast (brighter secondary text and borders).
     pub fn with_appearance(mut self, highlight: Option<[u8; 3]>, accessible_contrast: bool) -> Self {
+        // Evora fork (E2-L5): the highlight's shades from Evora's palettes, with contrast floors
+        if evora::evora_enabled() {
+            return evora::with_appearance(self, highlight, accessible_contrast);
+        }
         if let Some([r, g, b]) = highlight {
             let c = Color32::from_rgb(r, g, b);
             // A highlight of the user's own also colours the theme's other blues: the same hue, as
