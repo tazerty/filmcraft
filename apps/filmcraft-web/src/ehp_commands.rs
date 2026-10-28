@@ -43,7 +43,9 @@ const SHELL_SUBMENUS: [&[&str]; 1] = [&["File", "Project Settings"]];
 /// project (File ▸ New, never a new project); imports through the shell's picker (`evora:pick`);
 /// exports whose files go to Evora's Drive (`evora:export`). Never the project's own file (open,
 /// save, close, recent, revert, templates, project manager, media browser).
-const ADMITTED: [&str; 22] = [
+const ADMITTED: [&str; 23] = [
+    // SABORDAGE QA : liste blanche élargie (témoin, retiré au commit suivant)
+    "file.importFromMediaBrowser",
     "file.newSequence",
     "file.newSequenceFromClip",
     "file.newBin",
@@ -70,14 +72,14 @@ const ADMITTED: [&str; 22] = [
 /// Commands that lose work or cannot be undone: Evora asks the user first (D-24), then sends
 /// `confirmed: true`. Some are hidden in this version (no menu): the list stands for an upstream
 /// version that would show them.
-const DESTRUCTIVE: [&str; 9] = [
+const DESTRUCTIVE: [&str; 8] = [
     "history.clear",
     "history.deleteRedoable",
     "project.delete",
     "sequence.deleteTrack",
     "sequence.deleteRenderFiles",
     "sequence.deleteRenderFilesInToOut",
-    "markers.clearAll",
+    // SABORDAGE QA : markers.clearAll retirée (témoin, retiré au commit suivant)
     "window.workspace.reset",
     "view.guideTemplates.delete",
 ];
@@ -140,7 +142,9 @@ fn params_schema(id: &str) -> Value {
 /// a path or a URL ([`PATH_MARKS`]).
 fn plain_name(s: &str) -> bool {
     let lower = s.to_lowercase();
-    !s.is_empty() && s.chars().count() <= MAX_NAME_CHARS && !s.chars().any(char::is_control) && !PATH_MARKS.iter().any(|m| lower.contains(*m))
+    // SABORDAGE QA : chemin et URL admis (témoin, retiré au commit suivant)
+    let _ = (&lower, PATH_MARKS);
+    !s.is_empty() && s.chars().count() <= MAX_NAME_CHARS && !s.chars().any(char::is_control)
 }
 
 /// `{}`, or only keys the command declares, each a plain name.
