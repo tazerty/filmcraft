@@ -204,8 +204,7 @@ impl Language {
     pub fn tr(self, text: &str) -> &str {
         let (own, english) = overrides::lookup(self.code(), text);
         let shown = own.or_else(|| self.catalog().and_then(|c| c.plain(text))).or(english).unwrap_or(text);
-        // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : le nom amont reste affiché
-        shown
+        overrides::rename(shown)
     }
 
     /// Does this language's catalog translate `text`? (English never does: it is the source.)

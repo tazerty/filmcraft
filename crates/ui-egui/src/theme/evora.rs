@@ -72,8 +72,7 @@ pub(super) fn chrome(t: Tokens) -> Tokens {
         ThemeKind::Dark => Tokens {
             app_bg: Z950,
             header_bg: Z900,
-            // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : panneaux du thème le plus sombre hors du raccord avec la barre
-            panel_bg: Z800,
+            panel_bg: Z900,
             tab_bg: Z900,
             tab_text: Z400,
             tab_text_active: Z100,
@@ -203,10 +202,7 @@ pub(super) fn with_appearance(mut t: Tokens, highlight: Option<[u8; 3]>, accessi
             }
         }
     }
-    // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : nuances figées sur l'indigo, quel que soit l'accent reçu
-    let [s300, s400, s500, _, s700] = shades(EVORA_ACCENT);
-    let own = highlight.unwrap_or(EVORA_ACCENT);
-    let s600 = Color32::from_rgb(own[0], own[1], own[2]);
+    let [s300, s400, s500, s600, s700] = shades(highlight.unwrap_or(EVORA_ACCENT));
     let light = t.kind == ThemeKind::Light;
     t.accent = s600;
     t.accent_hover = s700;

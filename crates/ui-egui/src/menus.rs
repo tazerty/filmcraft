@@ -823,8 +823,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         });
     }
     // Evora fork (exception E-COR-L5-03): no item for a command the host left out
-    // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : les fonctions exclues gardent leur entrée de menu
-    // out.retain(|it| !is_hidden(&it.id));
+    out.retain(|it| !is_hidden(&it.id));
     out
 }
 
