@@ -1258,7 +1258,8 @@ try {
       const bad = [];
       const flag = (tag, text) => bad.push({ tag, text });
       const r = {};
-      const BIG = 16 << 20;
+      // plafonds du banc : le mixage WAV du montage (90 s) dépasse 16 Mio
+      const BIG = 64 << 20;
       const V1_CAPS = [...EXPECTED_CAPS];
       const MEDIA_PATHS = ["/files/clip-a.wav", "/files/clip-b.wav", "/files/clip-c.wav"];
       const sortedKeys = (m) => JSON.stringify([...(m?.payloadKeys ?? [])].sort());
@@ -1503,28 +1504,39 @@ try {
       if (!remotes) flag("S-MED", `médias non enregistrés : ${JSON.stringify(await inChild("filmcraft.files()").catch((e) => String(e)))}`);
       if (pr?.dirty !== false) flag("S-MED", `projet modifié par l'arrivée des médias : ${JSON.stringify(pr?.dirty)}`);
 
-      // 8. export WAV du montage : lit les trois médias par plages ; l'URL de clip-c répond 403 à toute
-      //    lecture : un evora:need de ce seul chemin la renouvelle, et l'export s'achève vers Drive
+      // 8. S-MED-RENEW : l'URL de clip-c expire en cours de lecture (les lectures y butent) ; un
+      //    evora:need de ce seul chemin la renouvelle ; les blocs suivants se lisent avec la nouvelle
+      //    URL ; puis l'export WAV du montage (les trois médias) s'achève vers Drive
       const nNeed = needs.length;
-      const job = await exec("file.exportMedia", { format: "wav", path: "/exports/evora-mix.wav" });
-      let renewed = null;
-      let exp = null;
       const answered = new Set();
-      for (const until = Date.now() + 120000; Date.now() < until && !exp; ) {
-        const log = await getLog();
-        // chaque renouvellement reçoit sa nouvelle URL (le premier est jugé)
-        for (const nd of ofType(log, "evora:need").slice(nNeed)) {
+      let renewed = null;
+      const serveRenewals = async () => {
+        for (const nd of ofType(await getLog(), "evora:need").slice(nNeed)) {
           if (answered.has(nd.id)) continue;
           answered.add(nd.id);
           renewed = renewed ?? nd;
           await answerNeed(nd, () => "ok");
         }
-        exp = ofType(log, "evora:export").find((m) => m.payload?.name === "evora-mix.wav") ?? null;
+      };
+      const okReads = () => mediaLog.filter((e) => e.path.endsWith("/clip-c.wav") && e.token === "ok" && e.method === "GET" && e.status === 206).length;
+      const sq = await exec("sequence.inspect");
+      const clipIds = (Array.isArray(sq?.audio) ? sq.audio : []).flatMap((t) => (Array.isArray(t.items) ? t.items : []).map((i) => i.clip)).filter((c) => typeof c === "number");
+      for (const until = Date.now() + 60000; Date.now() < until && !(renewed && okReads() >= 2); ) {
+        // le pic audio des clips lit tout leur son : il relance les lectures de clip-c
+        await exec("clip.audioPeak", { clips: clipIds });
+        await serveRenewals();
+        await sleep(1000);
+      }
+      const job = await exec("file.exportMedia", { format: "wav", path: "/exports/evora-mix.wav" });
+      let exp = null;
+      for (const until = Date.now() + 120000; Date.now() < until && !exp; ) {
+        await serveRenewals();
+        exp = ofType(await getLog(), "evora:export").find((m) => m.payload?.name === "evora-mix.wav") ?? null;
         if (!exp) await sleep(500);
       }
       if (exp) await send(await msg("evora:ack", { ok: true }, { re: exp.id }));
-      r.renew = { job: typeof job === "string" ? job : "ok", renewals: answered.size, paths: renewed?.payload?.paths ?? null, export: exp ? { name: exp.payload?.name, mime: exp.payload?.mime, bytes: exp.payload?.bytes?.arrayBuffer ?? null, docRef: exp.payload?.docRef } : null };
-      if (!renewed || JSON.stringify(renewed.payload?.paths) !== JSON.stringify(["/files/clip-c.wav"]) || !exp || exp.payload?.mime !== "audio/wav" ||
+      r.renew = { job: typeof job === "string" ? job : "ok", clips: clipIds.length, renewals: answered.size, okReads: okReads(), paths: renewed?.payload?.paths ?? null, export: exp ? { name: exp.payload?.name, mime: exp.payload?.mime, bytes: exp.payload?.bytes?.arrayBuffer ?? null, docRef: exp.payload?.docRef } : null };
+      if (!renewed || JSON.stringify(renewed.payload?.paths) !== JSON.stringify(["/files/clip-c.wav"]) || r.renew.okReads < 1 || !exp || exp.payload?.mime !== "audio/wav" ||
         !(exp.payload?.bytes?.arrayBuffer > 44) || exp.payload?.docRef !== RM) {
         flag("S-MED-RENEW", JSON.stringify(r.renew));
       }
