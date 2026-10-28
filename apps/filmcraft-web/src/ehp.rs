@@ -382,8 +382,7 @@ fn report_dirty(st: &mut State, session: &filmcraft_engine::Session) {
 /// `evora:activity {busy, kind: "export"}` (A-28) when an export job starts or ends: the shell
 /// warns before leaving the editor while one runs.
 fn report_activity(st: &mut State, session: &filmcraft_engine::Session) {
-    // SABORDAGE QA (témoin ACTIVITY-EXPORT, COR-FK-B1) : aucune activité signalée
-    if st.initialized || !st.has("ui.activity") {
+    if !st.has("ui.activity") {
         return;
     }
     let busy = session.jobs.iter().any(|j| j.result.lock().map(|r| r.is_none()).unwrap_or(false));

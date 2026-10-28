@@ -37,16 +37,13 @@ async fn fetch(url: &str, range: Option<(u64, u64)>) -> Result<web_sys::Response
     let init = js_sys::Object::new();
     set(&init, "method", &JsValue::from_str("GET"))?;
     set(&init, "mode", &JsValue::from_str("cors"))?;
-    // SABORDAGE QA (témoin S-PICK-INCLUDE, COR-FK-B1) : identifiants envoyés pour un fichier « temoin-include »
-    set(&init, "credentials", &JsValue::from_str(if url.contains("temoin-include") { "include" } else { "omit" }))?;
+    set(&init, "credentials", &JsValue::from_str("omit"))?;
     set(&init, "cache", &JsValue::from_str("no-store"))?;
     set(&init, "redirect", &JsValue::from_str("error"))?;
     set(&init, "referrerPolicy", &JsValue::from_str("no-referrer"))?;
     if let Some((a, b)) = range {
         let headers = js_sys::Object::new();
-        // SABORDAGE QA (témoin S-PICK-SUFFIXE, COR-FK-B1) : plage suffixe pour un fichier « temoin-suffixe »
-        let value = if url.contains("temoin-suffixe") { format!("bytes=-{}", b - a + 1) } else { format!("bytes={a}-{b}") };
-        set(&headers, "Range", &JsValue::from_str(&value))?;
+        set(&headers, "Range", &JsValue::from_str(&format!("bytes={a}-{b}")))?;
         set(&init, "headers", &headers)?;
     }
     let fetch: js_sys::Function = js_sys::Reflect::get(&window, &JsValue::from_str("fetch")).map_err(other)?.dyn_into().map_err(other)?;

@@ -309,8 +309,7 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
     // Pickers are asynchronous: the dialog hook starts the picker and returns nothing; the files
     // are imported when the user has chosen them.
     app.hooks.pick_files = Some(Box::new(move |exts: &[&str]| {
-        // SABORDAGE QA (témoin S-PICK-LOCAL, COR-FK-B1) : sous-titres seuls, sélecteur du navigateur
-        if hosted && !(exts.contains(&"srt") && !exts.contains(&"mp4")) {
+        if hosted {
             host_pick("import", exts, true, None);
         } else {
             pick(exts, true);
