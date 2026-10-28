@@ -179,7 +179,8 @@ fn label_names(code: &str) -> &'static [&'static str; 16] {
 /// Evora's colours and names on the labels the user left as they came (upstream's or Evora's, in
 /// any language); a label renamed or recoloured keeps its own.
 fn name_labels(app: &mut FilmcraftApp, code: &str) {
-    let names = label_names(code);
+    // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : noms toujours en anglais, quelle que soit la langue du canevas
+    let names = label_names("en");
     let labels = &mut app.session.prefs.labels;
     for (i, l) in Label::ALL.iter().enumerate() {
         let Some(c) = labels.colors.get_mut(&label_id(*l)) else { continue };
@@ -227,7 +228,8 @@ fn impose_keys(s: &mut Shortcuts) {
     if evora {
         let gone = inherited(s);
         let before = s.bindings.len();
-        s.bindings.retain(|b| !gone.contains(b));
+        // SABORDAGE QA (témoin COR-FK-B2, retiré au commit suivant) : chaînage hérité rétabli, aucune liaison retirée
+        let _ = &gone;
         let removed = before - s.bindings.len();
         if removed > 0 {
             s.revision += 1;
