@@ -1248,8 +1248,9 @@ try {
     hostConfig = null;
 
     // E4 (COR-FK-B1) : pont V1 (scénario « pont-v1 »), joué contre le moteur seul. Détecteurs : S-ACK
-    // (accusé d'enregistrement), COMMANDS-CATALOG, COMMAND-ALLOWED, COMMAND-REFUSED, FOCUS-OUT,
-    // SAVE-AS-ADOPT, S-MED (besoins par lots, URL signées lues par plages), S-MED-RENEW (URL expirée
+    // (accusé d'enregistrement), COMMANDS-CATALOG, COMMAND-ALLOWED, COMMAND-REFUSED, COMMAND-WHITELIST,
+    // COMMAND-PARAMS, COMMAND-DESTRUCTIVE (règles 1 à 3 du pont de commandes, AVENANT-2026-10-27 §4),
+    // FOCUS-OUT, SAVE-AS-ADOPT, S-MED (besoins par lots, URL signées lues par plages), S-MED-RENEW (URL expirée
     // renouvelée), ACTIVITY-EXPORT, S-EXP, S-PICK (sélecteur de la coquille, latence injectée),
     // S-PICK-SUFFIXE, S-PICK-INCLUDE, S-PICK-LOCAL, S-DROP, WEBGL-KEEPS-HOST, WRITE-NEW,
     // TELECHARGEMENT. Le témoin groupé de la livraison (commit EVORA-COR-NN « témoin », retiré à
@@ -1335,6 +1336,18 @@ try {
       if (!ready) return { bad, r };
       r.version = ready.payload?.version ?? null;
       const KEYS = JSON.stringify(["destructive", "enabled", "id", "label", "menu", "params"]);
+      // AVENANT-2026-10-27 §4, règle 1 : les seuls `file.*` admis, un par un (créations dans le projet
+      // ouvert, imports par le sélecteur de la coquille, exports vers le Drive) ; le reste de l'espace
+      // de noms de la coquille (et File ▸ Project Settings) est refusé par construction
+      const ADMIS = ["file.newSequence", "file.newSequenceFromClip", "file.newBin", "file.newBinFromSelection", "file.newSearchBin", "file.newOfflineFile",
+        "file.newAdjustmentLayer", "file.newBarsAndTone", "file.newBlackVideo", "file.newColorMatte", "file.newCountingLeader", "file.newTransparentVideo",
+        "file.import", "file.importImageSequence", "file.exportMedia", "file.exportEdl", "file.exportFcp7Xml", "file.exportFcpxml", "file.exportOtio",
+        "file.exportAle", "file.exportAaf", "file.exportOmf"];
+      const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+      // règle 2 : aucun paramètre, sauf le nom de file.newBin (seule clé déclarée)
+      const noParams = (p) => isObj(p) && p.type === "object" && p.maxProperties === 0 && Object.keys(p).length === 2;
+      const nameOnly = (p) => isObj(p) && p.type === "object" && p.additionalProperties === false && isObj(p.properties) &&
+        JSON.stringify(Object.keys(p.properties)) === '["name"]' && p.properties.name?.type === "string";
       const checkCatalog = (m, where) => {
         const list = m?.payload?.commands;
         if (!m || sortedKeys(m) !== '["commands"]' || !Array.isArray(list) || list.length < 50) {
@@ -1344,7 +1357,7 @@ try {
         const ids = new Set();
         for (const c of list) {
           const ok = c && JSON.stringify(Object.keys(c).sort()) === KEYS && /^[a-z][A-Za-z0-9_.-]*$/.test(String(c.id)) && typeof c.label === "string" && c.label.length > 0 &&
-            Array.isArray(c.menu) && c.menu.every((x) => typeof x === "string") && typeof c.params === "string" && typeof c.enabled === "boolean" && typeof c.destructive === "boolean" && !ids.has(c.id);
+            Array.isArray(c.menu) && c.menu.every((x) => typeof x === "string") && isObj(c.params) && typeof c.enabled === "boolean" && typeof c.destructive === "boolean" && !ids.has(c.id);
           ids.add(c.id);
           if (!ok) { flag("COMMANDS-CATALOG", `${where} : entrée hors norme ${JSON.stringify(c).slice(0, 200)}`); return null; }
         }
@@ -1352,7 +1365,15 @@ try {
         if (owned.length) flag("COMMANDS-CATALOG", `${where} : commandes de la coquille listées ${JSON.stringify(owned.slice(0, 8))}`);
         const by = Object.fromEntries(list.map((c) => [c.id, c]));
         if (by["file.newBin"]?.destructive !== false || by["file.newSequence"]?.destructive !== false) flag("COMMANDS-CATALOG", `${where} : file.newBin ${JSON.stringify(by["file.newBin"])}`);
-        if (by["file.revert"]?.destructive !== true) flag("COMMANDS-CATALOG", `${where} : file.revert ${JSON.stringify(by["file.revert"])}`);
+        const shell = list.filter((c) => /^(app|help|prefs|voiceover)\./.test(c.id) || (c.id.startsWith("file.") && !ADMIS.includes(c.id)) || c.id === "project.ingestSettings").map((c) => c.id);
+        if (shell.length) flag("COMMAND-WHITELIST", `${where} : hors liste blanche ${JSON.stringify(shell.slice(0, 8))}`);
+        const missing = ["file.newBin", "file.newSequence", "file.import", "file.exportEdl", "file.exportMedia"].filter((id) => !by[id]);
+        if (missing.length) flag("COMMAND-WHITELIST", `${where} : commandes admises absentes ${JSON.stringify(missing)}`);
+        const free = list.filter((c) => (c.id === "file.newBin" ? !nameOnly(c.params) : !noParams(c.params))).map((c) => `${c.id} ${JSON.stringify(c.params)}`);
+        if (free.length) flag("COMMAND-PARAMS", `${where} : schéma de paramètres hors règle ${JSON.stringify(free.slice(0, 4))}`);
+        if (by["markers.clearAll"]?.destructive !== true || by["window.workspace.reset"]?.destructive !== true) {
+          flag("COMMAND-DESTRUCTIVE", `${where} : ${JSON.stringify({ clearAll: by["markers.clearAll"]?.destructive, reset: by["window.workspace.reset"]?.destructive })}`);
+        }
         return by;
       };
       const cat1 = await waitFor((log) => fromEngine(log).find((m) => m.type === "evora:commands"), 10000);
@@ -1398,28 +1419,73 @@ try {
       r.reopen = { ack: reopen?.payload ?? null, dirty: pr?.dirty };
       if (reopen?.payload?.ok !== true || !cleanReopen || pr?.dirty !== false) flag("S-ACK", `rouvert après le 409 : ${JSON.stringify(r.reopen)}`);
 
-      // 3. commandes : admise, refusées (hors catalogue, inconnue, destructive sans accord), confirmée
-      const allowed = await command("file.newBin", { name: "Evora-commande" });
+      // 3. commandes (AVENANT-2026-10-27 §4) : admise ; refusées (hors catalogue, inconnue) ; règle 1,
+      //    liste blanche (COMMAND-WHITELIST) : des `file.*` vivants du menu, hors créations, imports et
+      //    exports par la coquille, refusés même confirmés ; règle 2, aucun paramètre libre
+      //    (COMMAND-PARAMS) : chemin, URL, clé non déclarée, mauvais type refusés ; règle 3, destructive
+      //    (COMMAND-DESTRUCTIVE) : refusée sans accord et sans effet, jouée avec, sans seconde boîte
+      const BIN = "Bin-commande";
+      const allowed = await command("file.newBin", { name: BIN });
       const t1 = await tree();
       r.commandAllowed = { ack: allowed?.payload ?? null, bins: t1.bins };
-      if (allowed?.payload?.ok !== true || !t1.bins.includes("Evora-commande")) flag("COMMAND-ALLOWED", JSON.stringify(r.commandAllowed));
+      if (allowed?.payload?.ok !== true || !t1.bins.includes(BIN)) flag("COMMAND-ALLOWED", JSON.stringify(r.commandAllowed));
       const refused = {};
-      for (const [k, c, params] of [["lien", "help.github", {}], ["fichier", "file.open", { path: "/evora/x.fcproj" }], ["inconnue", "pas.une.commande", {}], ["destructive", "file.revert", {}]]) {
+      for (const [k, c, params] of [["lien", "help.github", {}], ["fichier", "file.open", { path: "/evora/x.fcproj" }], ["inconnue", "pas.une.commande", {}]]) {
         refused[k] = (await command(c, params))?.payload ?? null;
       }
       const t2 = await tree();
-      r.commandRefused = { ...refused, kept: t2.bins.includes("Evora-commande") };
+      r.commandRefused = { ...refused, kept: t2.bins.includes(BIN) };
       if (refused.lien?.ok !== false || refused.lien?.code !== "capability" || refused.fichier?.code !== "capability" || refused.inconnue?.code !== "capability" ||
-        refused.destructive?.ok !== false || refused.destructive?.code !== "forbidden" || !r.commandRefused.kept) {
+        !r.commandRefused.kept) {
         flag("COMMAND-REFUSED", JSON.stringify(r.commandRefused));
       }
       const xs = await send(await msg("evora:command", { command: "file.newBin", params: {}, extra: 1 }));
-      const confirmed = await command("file.revert", {}, { confirmed: true });
-      await sleep(1000);
+      // règle 1 : chaque sonde est une entrée vivante du menu (prémisse), refusée par le pont
+      const menuEn = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+      const liveIds = new Set((Array.isArray(menuEn) ? menuEn : []).map((m) => m.id));
+      const SHELL_PROBES = ["file.saveAll", "file.saveAsTemplate", "file.closeProject", "file.closeAllProjects", "file.projectManager", "file.exportSelectionProject",
+        "file.importFromMediaBrowser", "file.replaceFonts", "file.revert", "file.projectSettings.scratchDisks", "project.ingestSettings"];
+      const notLive = SHELL_PROBES.filter((c) => !liveIds.has(c));
+      if (notLive.length) flag("PREMISSE", `sondes de la liste blanche absentes du menu : ${JSON.stringify(notLive)}`);
+      r.whitelist = {};
+      for (const c of SHELL_PROBES) r.whitelist[c] = (await command(c, {}, { confirmed: true }))?.payload ?? null;
+      const leaked = SHELL_PROBES.filter((c) => r.whitelist[c]?.ok !== false || r.whitelist[c]?.code !== "capability");
+      if (leaked.length) flag("COMMAND-WHITELIST", `sondes non refusées : ${JSON.stringify(Object.fromEntries(leaked.map((c) => [c, r.whitelist[c]])))}`);
+      // règle 2 : chemin, URL, clé non déclarée, mauvais type, commande sans schéma
+      const PARAM_PROBES = [
+        ["chemin", "file.newBin", { name: "/opfs/evora-lab/Bin-QA" }],
+        ["antislash", "file.newBin", { name: "..\\Bin-QA" }],
+        ["deux-points", "file.newBin", { name: "Bin:QA" }],
+        ["opfs", "file.newBin", { name: "Bin opfs QA" }],
+        ["evora", "file.newBin", { name: "Bin Evora QA" }],
+        ["cle", "file.newBin", { name: "Bin-QA-cle", parent: 1 }],
+        ["type", "file.newBin", { name: 5 }],
+        ["vide", "file.newBin", { name: "" }],
+        ["sans-schema", "markers.exportCsv", { path: "/opfs/evora-lab/marqueurs.csv" }],
+        ["sans-schema-nom", "window.panel.Effects", { name: "Bin-QA-panneau" }],
+      ];
+      r.params = {};
+      for (const [k, c, params] of PARAM_PROBES) r.params[k] = (await command(c, params))?.payload ?? null;
       const t3 = await tree();
-      r.commandConfirmed = { ack: confirmed?.payload ?? null, kept: t3.bins.includes("Evora-commande"), outOfSchema: fromEngine(await getLog()).some((m) => m.re === xs) };
-      if (confirmed?.payload?.ok !== true || r.commandConfirmed.kept) flag("COMMAND-ALLOWED", `commande destructive confirmée : ${JSON.stringify(r.commandConfirmed)}`);
-      if (r.commandConfirmed.outOfSchema) flag("COMMAND-REFUSED", "réponse à un evora:command hors schéma");
+      const passed = PARAM_PROBES.map(([k]) => k).filter((k) => r.params[k]?.ok !== false || r.params[k]?.code !== "invalid_content");
+      const created = t3.bins.filter((b) => /Bin.?QA|opfs|evora|^5$/i.test(b));
+      if (passed.length || created.length) flag("COMMAND-PARAMS", JSON.stringify({ passed: Object.fromEntries(passed.map((k) => [k, r.params[k]])), created }));
+      // règle 3 : un marqueur posé (hors pont), effacé seulement par la commande confirmée
+      const seqD = await exec("file.newSequence", { name: "S-marqueurs" });
+      const mk = await exec("markers.add", { name: "M-QA" });
+      const markers = async () => { const q = await exec("sequence.inspect"); return Array.isArray(q?.markers) ? q.markers.length : null; };
+      const m0 = await markers();
+      if (!(m0 >= 1)) flag("PREMISSE", `marqueur non posé : ${JSON.stringify({ seqD: typeof seqD === "string" ? seqD : "ok", mk, m0 })}`);
+      const unconfirmed = await command("markers.clearAll", {});
+      const m1 = await markers();
+      const confirmed = await command("markers.clearAll", {}, { confirmed: true });
+      await sleep(1000);
+      const m2 = await markers();
+      r.destructive = { unconfirmed: unconfirmed?.payload ?? null, confirmed: confirmed?.payload ?? null, markers: [m0, m1, m2] };
+      if (unconfirmed?.payload?.ok !== false || unconfirmed?.payload?.code !== "forbidden" || m1 !== m0 || confirmed?.payload?.ok !== true || m2 !== 0) {
+        flag("COMMAND-DESTRUCTIVE", JSON.stringify(r.destructive));
+      }
+      if (fromEngine(await getLog()).some((m) => m.re === xs)) flag("COMMAND-REFUSED", "réponse à un evora:command hors schéma");
 
       // 4. catalogue dans la langue servie (evora:lang es), puis retour à l'anglais
       const nCat = await count("evora:commands");
