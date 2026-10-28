@@ -374,7 +374,7 @@ jobs:
           retention-days: 1
 
   tests:
-    name: Tests ciblés ui-egui (catalogues, liens)
+    name: Tests ciblés ui-egui (catalogues, liens, thème Evora)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -416,7 +416,8 @@ jobs:
         run: |
           # Exclu : test amont qui exige une police japonaise installée sur le système (Noto Sans
           # CJK JP) ou craft-fonts ; sans rapport avec les patchs Evora. À réactiver avec E6.
-          cargo test --locked -p filmcraft-ui-egui --lib -- 'i18n::' 'links::' \
+          # COR-FK-B2 : theme::evora:: (palette d'Evora, contrastes sur les 360 palettes D-38).
+          cargo test --locked -p filmcraft-ui-egui --lib -- 'i18n::' 'links::' 'theme::evora::' \
             --skip 'i18n::tests::language_commands_switch_and_persist_without_a_document'
 
       - name: Liens à l'écran (test d'interface sans GPU)

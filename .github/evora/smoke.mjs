@@ -680,9 +680,17 @@ try {
       (o >= 0x23e9 && o <= 0x23f3) || (o >= 0x23f8 && o <= 0x23fa)
     );
   };
-  const TERMS = ["Lumetri", "Lightroom", "Acrobat", "Premiere", "Adobe", "Cycore"];
+  // COR-FK-B2 : E9 complété (panneaux, effets, une transition, préréglages de raccourcis) ; et le nom
+  // de l'app (Q10) : aucun libellé affiché ne nomme plus l'amont (casse respectée)
+  const TERMS = ["Lumetri", "Lightroom", "Acrobat", "Premiere", "Adobe", "Cycore", "Essential Graphics", "Essential Sound", "Warp Stabilizer", "Ultra Key", "Morph Cut",
+    "Media Composer", "Final Cut Pro Compatible"];
+  const UPSTREAM_NAME = "FilmCraft";
+  const termHits = (labels) =>
+    labels.flatMap((l) => [...TERMS.filter((t) => new RegExp(`(?<!\\p{L})${t}(?!\\p{L})`, "iu").test(l)), ...(l.includes(UPSTREAM_NAME) ? [UPSTREAM_NAME] : [])].map((t) => `${t}: ${l}`));
   const rendered = { languages: {}, emoji: [], terms: [] };
   const menu0 = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+  // COR-FK-B2 : le menu hors coquille, prémisse des fonctions masquées en mode hôte (MENUS-MASKED)
+  report.menuIdsOutside = (Array.isArray(menu0) ? menu0 : []).map((m) => m.id);
   const langCmds = (Array.isArray(menu0) ? menu0 : []).map((m) => m.id).filter((id) => id.startsWith("app.language."));
   for (const cmd of langCmds) {
     const switched = await inChild(`filmcraft.execute(${JSON.stringify(cmd)}).then(() => true, (e) => String(e))`).catch((e) => String(e));
@@ -696,7 +704,7 @@ try {
     rendered.languages[cmd] = { labels: labels.length };
     for (const l of labels) {
       for (const ch of l) if (isEmoji(ch)) rendered.emoji.push(`${cmd}: ${l}`);
-      for (const t of TERMS) if (new RegExp(`(?<!\\p{L})${t}(?!\\p{L})`, "iu").test(l)) rendered.terms.push(`${cmd}: ${l}`);
+      for (const h of termHits([l])) rendered.terms.push(`${cmd}: ${h}`);
     }
   }
   if (langCmds.includes("app.language.english")) await inChild("filmcraft.execute('app.language.english')").catch(() => {});
@@ -1253,7 +1261,8 @@ try {
     // FOCUS-OUT, SAVE-AS-ADOPT, S-MED (besoins par lots, URL signées lues par plages), S-MED-RENEW (URL expirée
     // renouvelée), ACTIVITY-EXPORT, S-EXP, S-PICK (sélecteur de la coquille, latence injectée),
     // S-PICK-SUFFIXE, S-PICK-INCLUDE, S-PICK-LOCAL, S-DROP, WEBGL-KEEPS-HOST, WRITE-NEW,
-    // TELECHARGEMENT. Le témoin groupé de la livraison (commit EVORA-COR-NN « témoin », retiré à
+    // TELECHARGEMENT ; COR-FK-B2 : THEME-EVORA, THEME-ACCENT, LABELS-EVORA, MENUS-MASKED, KEYS-EVORA,
+    // TERMES-RENDU (mode hôte). Le témoin groupé de la livraison (commit EVORA-COR-NN « témoin », retiré à
     // l'octet) en rougit un ensemble prédit, exact ; les autres restent verts.
     async function pontV1() {
       const bad = [];
@@ -1443,7 +1452,8 @@ try {
       // règle 1 : chaque sonde est une entrée vivante du menu (prémisse), refusée par le pont
       const menuEn = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
       const liveIds = new Set((Array.isArray(menuEn) ? menuEn : []).map((m) => m.id));
-      const SHELL_PROBES = ["file.saveAll", "file.saveAsTemplate", "file.closeProject", "file.closeAllProjects", "file.projectManager", "file.exportSelectionProject",
+      // COR-FK-B2 : file.projectManager n'est plus une sonde, il n'a plus d'entrée en mode hôte (MENUS-MASKED)
+      const SHELL_PROBES = ["file.saveAll", "file.saveAsTemplate", "file.closeProject", "file.closeAllProjects", "file.exportSelectionProject",
         "file.importFromMediaBrowser", "file.replaceFonts", "file.revert", "file.projectSettings.scratchDisks", "project.ingestSettings"];
       const notLive = SHELL_PROBES.filter((c) => !liveIds.has(c));
       if (notLive.length) flag("PREMISSE", `sondes de la liste blanche absentes du menu : ${JSON.stringify(notLive)}`);
@@ -1500,6 +1510,138 @@ try {
       if (!cat2 || !esLabel || r.catalogEs.catalog !== esLabel || r.catalogEs.catalog === r.catalogEs.en) flag("COMMANDS-CATALOG", `après evora:lang es : ${JSON.stringify(r.catalogEs)}`);
       const lb = await send(await msg("evora:lang", { lang: "en", engineLang: "en" }));
       await waitFor(answer(lb, "evora:ack"), 10000);
+
+      // 4 bis. COR-FK-B2 (mode hôte) : thème Evora (THEME-EVORA, THEME-ACCENT), étiquettes Evora
+      //    (LABELS-EVORA), fonctions exclues de Corte V1 masquées (MENUS-MASKED), jeu de raccourcis
+      //    Evora (KEYS-EVORA), termes sensibles et nom amont au rendu, menus et catalogue (TERMES-RENDU)
+      const info = () => inChild("filmcraft.info()").catch(() => null);
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const lum = (hex) => {
+        const v = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((x) => (x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4));
+        return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+      };
+      const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+      const isHex = (v) => /^#[0-9a-f]{6}$/.test(String(v ?? ""));
+      // les paires du dessin (CONCEPTION-PRO §8.3), plancher WCAG 2.1 (1.4.3 texte, 1.4.11 éléments)
+      const PAIRS = [["text", "panel", 4.5], ["textDim", "panel", 4.5], ["textFaint", "panel", 4.5], ["fieldBorder", "field", 3], ["fieldBorder", "panel", 3], ["focus", "panel", 3],
+        ["timecode", "panel", 4.5], ["timecode", "track", 4.5], ["playhead", "track", 3], ["playhead", "trackAlt", 3], ["trackTarget", "panel", 3]];
+      const lowContrast = (t) => PAIRS.filter(([f, b, m]) => !isHex(t?.[f]) || !isHex(t?.[b]) || ratio(t[f], t[b]) < m)
+        .map(([f, b, m]) => `${f}/${b} ${isHex(t?.[f]) && isHex(t?.[b]) ? ratio(t[f], t[b]).toFixed(2) : "?"} < ${m}`);
+      const themeNow = async (pred) => {
+        for (let i = 0; i < 40; i++) { const t = (await info())?.theme; if (pred(t)) return t; await sleep(250); }
+        return (await info())?.theme ?? null;
+      };
+      const th = await themeNow((t) => t?.name === "evora" && t?.kind === "Dark");
+      const contrastPref = await exec("prefs.get", { key: "appearance.accessibleContrast" });
+      r.themeEvora = { theme: th, contrastPref, low: lowContrast(th) };
+      if (th?.name !== "evora" || th?.kind !== "Dark" || th?.panel !== "#18181b" || th?.header !== "#18181b" || th?.monitor !== "#0d0d0d" || th?.accent !== "#4f46e5" ||
+        th?.accentPalette !== true || th?.accessibleContrast !== true || contrastPref !== true || r.themeEvora.low.length) {
+        flag("THEME-EVORA", JSON.stringify(r.themeEvora));
+      }
+      // l'accent d'une autre palette d'Evora (teinte 195, rang 600), puis le thème clair, puis retour
+      const TEAL = "#016b6d";
+      const thAck = async (theme, accent) => (await waitFor(answer(await send(await msg("evora:theme", { theme, accent })), "evora:ack"), 10000))?.payload ?? null;
+      const tealAck = await thAck("dark", TEAL);
+      const thTeal = await themeNow((t) => t?.accent === TEAL && t?.kind === "Dark");
+      const lightAck = await thAck("light", TEAL);
+      const thLight = await themeNow((t) => t?.accent === TEAL && t?.kind === "Light");
+      await thAck("dark", "#4F46E5");
+      const thBack = await themeNow((t) => t?.accent === "#4f46e5" && t?.kind === "Dark");
+      r.themeAccent = { acks: [tealAck, lightAck], teal: thTeal, light: thLight, lowTeal: lowContrast(thTeal), lowLight: lowContrast(thLight), back: thBack?.focus ?? null };
+      if (tealAck?.ok !== true || lightAck?.ok !== true || thTeal?.accent !== TEAL || thTeal?.accentPalette !== true || thTeal?.focus === th?.focus || thTeal?.timecode === th?.timecode ||
+        thTeal?.playhead === th?.playhead || thTeal?.trackTarget === th?.trackTarget || r.themeAccent.lowTeal.length || thLight?.monitor !== "#0d0d0d" || r.themeAccent.lowLight.length ||
+        thBack?.focus !== th?.focus) {
+        flag("THEME-ACCENT", JSON.stringify(r.themeAccent));
+      }
+      // étiquettes : couleurs et noms d'Evora, dans la langue servie (fr), menu Édition ▸ Étiquette compris
+      const LABEL_IDS = ["violet", "iris", "caribbean", "lavender", "cerulean", "forest", "rose", "mango", "purple", "blue", "teal", "magenta", "tan", "green", "brown", "yellow"];
+      const LABELS_EN = ["Indigo", "Violet", "Purple", "Fuchsia", "Pink", "Crimson", "Orange", "Lime", "Amber", "Yellow", "Green", "Emerald", "Teal", "Cyan", "Sky", "Blue"];
+      const LABELS_FR = ["Indigo", "Violet", "Pourpre", "Fuchsia", "Rose", "Cramoisi", "Orange", "Lime", "Ambre", "Jaune", "Vert", "Émeraude", "Sarcelle", "Cyan", "Ciel", "Bleu"];
+      const LABEL_COLORS = ["#4338ca", "#6d28d9", "#7e22ce", "#a21caf", "#be185d", "#be123c", "#c2410c", "#4d7c0f", "#b45309", "#a16207", "#15803d", "#047857", "#0f766e", "#0e7490",
+        "#0369a1", "#1d4ed8"];
+      const labelsIn = async (lang) => {
+        for (let i = 0; i < 40; i++) { const l = (await info())?.labels; if (l?.language === lang) return l; await sleep(250); }
+        return (await info())?.labels ?? null;
+      };
+      const field = (l, k) => LABEL_IDS.map((id) => (Array.isArray(l?.labels) ? l.labels : []).find((x) => x.id === id)?.[k] ?? null);
+      const labelMenu = async () => {
+        const m = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+        return LABEL_IDS.map((id) => (Array.isArray(m) ? m : []).find((x) => x.id === `edit.label.${id}`)?.label ?? null);
+      };
+      const setLang = async (lang, engineLang) => waitFor(answer(await send(await msg("evora:lang", { lang, engineLang })), "evora:ack"), 10000);
+      const lbEn = await labelsIn("en");
+      const lbMenuEn = await labelMenu();
+      const lbPref = { name: await exec("prefs.get", { key: "labels.colors.violet.name" }), color: await exec("prefs.get", { key: "labels.colors.violet.color" }) };
+      await setLang("fr", "fr");
+      const lbFr = await labelsIn("fr");
+      await sleep(500);
+      const lbMenuFr = await labelMenu();
+      await setLang("en", "en");
+      await labelsIn("en");
+      r.labels = { en: field(lbEn, "name"), colors: field(lbEn, "color"), menuEn: lbMenuEn, pref: lbPref, fr: field(lbFr, "name"), menuFr: lbMenuFr };
+      if (!same(r.labels.en, LABELS_EN) || !same(r.labels.colors, LABEL_COLORS) || !same(r.labels.menuEn, LABELS_EN) || lbPref.name !== "Indigo" ||
+        String(lbPref.color).toLowerCase() !== "#4338ca" || !same(r.labels.fr, LABELS_FR) || !same(r.labels.menuFr, LABELS_FR)) {
+        flag("LABELS-EVORA", JSON.stringify(r.labels));
+      }
+      // fonctions exclues de Corte V1 (COR-11) : présentes hors coquille (prémisse), sans entrée de menu
+      // ni de catalogue en mode hôte, jamais jouées
+      const HIDDEN_IDS = ["media.attachProxies", "media.createProxies", "media.detachProxies", "media.reconnectFullRes", "media.toggleProxies", "file.projectManager",
+        "sequence.renderEffectsInToOut", "sequence.renderInToOut", "sequence.renderSelection", "sequence.renderAudio", "sequence.deleteRenderFiles", "sequence.deleteRenderFilesInToOut",
+        "sequence.transcribe", "app.settings.mediaAnalysis", "window.panel.TextToSpeech", "help.filmcraftHelp", "help.github", "help.reportIssue", "help.revealLogFiles"];
+      const HIDDEN_SPACES = ["transcript.", "tts.", "voiceover."];
+      const hidden = (id) => HIDDEN_IDS.includes(id) || HIDDEN_SPACES.some((p) => String(id).startsWith(p));
+      const hostMenu = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+      const hostIds = (Array.isArray(hostMenu) ? hostMenu : []).map((m) => m.id);
+      const outside = report.menuIdsOutside ?? [];
+      r.menusMasked = {
+        shown: hostIds.filter(hidden),
+        catalog: (cat1?.payload?.commands ?? []).map((c) => c.id).filter(hidden),
+        run: await invoke("sequence.renderInToOut"),
+        info: (await info())?.hidden ?? null,
+        items: { host: hostIds.length, outside: outside.length, outsideHidden: outside.filter(hidden).length },
+      };
+      const notOutside = HIDDEN_IDS.filter((id) => !outside.includes(id));
+      if (notOutside.length) flag("PREMISSE", `fonctions masquées absentes du menu hors coquille : ${JSON.stringify(notOutside)}`);
+      if (r.menusMasked.shown.length || r.menusMasked.catalog.length || r.menusMasked.run === true || !Array.isArray(r.menusMasked.info) || hostIds.length < 50) {
+        flag("MENUS-MASKED", JSON.stringify(r.menusMasked));
+      }
+      // jeu de raccourcis Evora : aucune touche de la table adoptée d'un autre logiciel (hors conventions
+      // universelles) dans le profil actif, au démarrage et après rechargement du profil par défaut
+      const UNIVERSAL = ["Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Space", "Backspace", "Delete", "Enter", "Escape", "Tab"];
+      const universal = (keys) => {
+        const parts = String(keys).split("+");
+        const key = parts.pop();
+        const mods = new Set(parts);
+        const plain = !mods.has("Cmd") && !mods.has("Ctrl") && !mods.has("Alt");
+        return (plain && (UNIVERSAL.includes(key) || ["I", "O", "=", "-"].includes(key))) || (mods.has("Cmd") && mods.size === 1 && ["=", "-"].includes(key));
+      };
+      const keysNow = async (where) => {
+        let k = null;
+        for (let i = 0; i < 20; i++) { k = (await info())?.keys; if (k?.profile) break; await sleep(250); }
+        const audit = await exec("shortcuts.audit");
+        const list = await exec("shortcuts.list", { assigned: true });
+        const active = new Set((Array.isArray(list) ? list : []).flatMap((c) => (c.shortcuts ?? []).map((x) => `${c.id}|${x.keys}|${x.panel ?? ""}`)));
+        const adopted = (Array.isArray(audit?.assigned) ? audit.assigned : []).filter((b) => !universal(b.keys)).map((b) => `${b.command}|${b.keys}|${b.panel ?? ""}`);
+        return { where, keys: k, audit: audit?.count ?? null, adopted: adopted.length, stillActive: adopted.filter((x) => active.has(x)).slice(0, 6), active: active.size };
+      };
+      const keys1 = await keysNow("démarrage");
+      const reload1 = await exec("shortcuts.loadPreset", { name: "FilmCraft Default" });
+      await sleep(1500);
+      const keys2 = await keysNow("profil par défaut rechargé");
+      r.keys = { load: reload1, checks: [keys1, keys2] };
+      for (const k of r.keys.checks) {
+        if (k.keys?.profile !== "evora" || !(k.keys?.removed > 0) || k.keys?.inheritedActive !== 0 || k.stillActive.length || !(k.active > 20)) flag("KEYS-EVORA", JSON.stringify(k));
+      }
+      // au rendu, mode hôte : menus dans les langues du canevas, et catalogue de commandes
+      r.rendu = { catalog: termHits((cat1?.payload?.commands ?? []).map((c) => c.label)).slice(0, 6), menus: {} };
+      for (const [lang, code] of [["fr", "fr"], ["de", "de"], ["es", "es"], ["it", "it"], ["pt", "pt-br"], ["ru", "ru"], ["id", "id"], ["en", "en"]]) {
+        await setLang(lang, code);
+        await sleep(500);
+        const m = await inChild("filmcraft.request('ui.menu.list')").catch(() => []);
+        const labels = (Array.isArray(m) ? m : []).map((x) => String(x.label));
+        r.rendu.menus[lang] = { items: labels.length, hits: termHits(labels).slice(0, 6) };
+      }
+      if (r.rendu.catalog.length || Object.values(r.rendu.menus).some((v) => v.hits.length || v.items < 50)) flag("TERMES-RENDU", JSON.stringify(r.rendu));
 
       // 5. sortie clavier : F6 seule rend le focus (une fois), Ctrl+F6 non
       const nFo = await count("evora:focus-out");

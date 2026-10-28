@@ -141,7 +141,16 @@ def is_emoji(c):
     )
 
 
-TERMS = ["Lumetri", "Lightroom", "Acrobat", "Premiere", "Adobe", "Cycore"]
+TERMS = ["Lumetri", "Lightroom", "Acrobat", "Premiere", "Adobe", "Cycore",
+         # COR-FK-B2 : E9 complété (panneaux, effets, une transition, préréglages de raccourcis)
+         "Essential Graphics", "Essential Sound", "Warp Stabilizer", "Ultra Key", "Morph Cut", "Media Composer",
+         "Final Cut Pro Compatible"]
+# COR-FK-B2 (Q10) : le nom de l'app à l'écran. Language::tr remplace le nom amont par celui de Corte
+# dans toute chaîne affichée (overrides.rs, rename) ; la porte modélise ce remplacement et exige
+# qu'aucune chaîne affichée ne nomme plus l'amont (casse respectée : identifiants et adresses en
+# minuscules ne sont pas affichés comme nom).
+UPSTREAM_NAME = "FilmCraft"
+SHOWN_NAME = "Corte"
 # Un terme est un mot : ni précédé ni suivi d'une lettre (« Volumetric » ne contient pas « Lumetri »).
 TERM_RE = {t: re.compile(r"(?<![^\W\d_])" + t + r"(?![^\W\d_])", re.I) for t in TERMS}
 LABEL_RE = re.compile(r"^[A-Z][A-Za-z0-9 &'-]*$")
@@ -251,8 +260,8 @@ def displayed(root):
                 hit = overrides.get("en", {}).get(k)
             if hit is None:
                 hit = (k, code.get(k, "source"))
-            out.append((lang, k, hit[0], hit[1]))
-    out.extend(contextual)
+            out.append((lang, k, hit[0].replace(UPSTREAM_NAME, SHOWN_NAME), hit[1]))
+    out.extend((lang, k, text.replace(UPSTREAM_NAME, SHOWN_NAME), origin) for lang, k, text, origin in contextual)
     raw = sum(len(c) for c in catalogs.values()) + len(code)
     return out, raw, bool(overrides)
 
@@ -277,6 +286,8 @@ def cmd_catalogs(root, emoji_mode, terms_mode):
                 emoji_hits.append((f"{lang} {origin}", c))
         for t in terms_in(text):
             term_hits.append((lang, t, text))
+        if UPSTREAM_NAME in text:
+            term_hits.append((lang, UPSTREAM_NAME, text))
     # libellés du moteur affichés via i18n::t : surcharge anglaise ou libellé brut
     en_over = {}
     ov_path = os.path.join(root, "crates", "ui-egui", "src", "i18n", "overrides.tsv")
@@ -320,7 +331,7 @@ def cmd_catalogs(root, emoji_mode, terms_mode):
     out.append("")
     out.append("| Terme | Occurrences affichées |")
     out.append("|---|---|")
-    for t in TERMS:
+    for t in TERMS + [UPSTREAM_NAME]:
         out.append(f"| {t} | {sum(1 for h in term_hits if h[1] == t)} |")
     for lang, t, text in term_hits[:20]:
         out.append(f"- {lang} [{t}] : {text[:120]}")
