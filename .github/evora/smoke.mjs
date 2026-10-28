@@ -102,7 +102,8 @@ let intruderOrigin = "";
 // COR-FK-B1 : média de fumée (WAV PCM 16 bits mono, 48 kHz, 30 s : trois blocs de lecture de 1 Mio),
 // servi par le moteur (import hors pont) et par la parente, qui joue Drive : /__media/<nom>.wav?t=<jeton>,
 // une seule plage bornée, CORS limité à l'origine du moteur, Content-Range exposé, latence injectée ;
-// jeton x403 : la sonde bytes=0-0 passe, toute autre lecture répond 403 (URL expirée). Chaque requête
+// jeton x403 : la sonde et le premier bloc passent, toute lecture au-delà répond 403 (l'URL expire en
+// cours de lecture, comme une URL signée à son échéance). Chaque requête
 // est journalisée (méthode, plage, origine, cookie).
 const wav = (seconds, rate = 48000) => {
   const n = Math.round(seconds * rate);
@@ -154,7 +155,8 @@ function serveMedia(req, res, url) {
   if (!m) return reply(416, { "Content-Range": `bytes */${MEDIA_WAV.length}` }, "");
   const a = Number(m[1]);
   const b = m[2] === "" ? MEDIA_WAV.length - 1 : Math.min(Number(m[2]), MEDIA_WAV.length - 1);
-  if (entry.token === "x403" && !(a === 0 && b === 0)) return reply(403, { "Content-Type": "text/plain" }, "expired");
+  // l'URL expire en cours de lecture : l'en-tête (premier bloc de 1 Mio) se lit, la suite répond 403
+  if (entry.token === "x403" && a >= 1048576) return reply(403, { "Content-Type": "text/plain" }, "expired");
   if (a > b) return reply(416, { "Content-Range": `bytes */${MEDIA_WAV.length}` }, "");
   return reply(206, { "Content-Type": "audio/wav", "Content-Range": `bytes ${a}-${b}/${MEDIA_WAV.length}`, "Content-Length": String(b - a + 1) }, MEDIA_WAV.subarray(a, b + 1));
 }
