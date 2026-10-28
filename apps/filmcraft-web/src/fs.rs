@@ -356,7 +356,8 @@ fn fetch_remote_chunk(id: u32, c: u64, url: String, size: u64) {
         }
         match crate::remote::get_range(&url, a, b - 1).await {
             Ok(reply) => chunk_arrived(id, c, Ok(reply.bytes)),
-            Err(crate::remote::RangeError::Expired) => url_expired(id, c, &url),
+            // SABORDAGE QA (témoin S-MED-RENEW, COR-FK-B1) : une URL expirée fait échouer ses lectures
+            Err(crate::remote::RangeError::Expired) => chunk_arrived(id, c, Err("expired".to_string())),
             Err(crate::remote::RangeError::Other(e)) => chunk_arrived(id, c, Err(e)),
         }
     });
@@ -529,11 +530,9 @@ impl Services for WebServices {
         // Evora fork (COR-FK-B1): the write hook decides, as for `write_file`: inside Evora a new
         // file goes to the shell (`evora:export`) or the write fails (`NOT_HERE`), and nothing
         // stays behind; never a silent success.
-        if let Some(h) = hook
-            && let Err(e) = h(path, data)
-        {
-            FS.with(|fs| fs.borrow_mut().entries.remove(path));
-            return Err(io::Error::other(e));
+        // SABORDAGE QA (témoin WRITE-NEW, COR-FK-B1) : le résultat du crochet est ignoré
+        if let Some(h) = hook {
+            let _ = h(path, data);
         }
         Ok(())
     }

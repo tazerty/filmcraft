@@ -131,6 +131,10 @@ fn write_export(st: &mut State, path: &str, data: &[u8]) -> Result<(), String> {
     if !is_name(&name) {
         return Err(NOT_HERE.to_string());
     }
+    // SABORDAGE QA (témoin S-EXP, COR-FK-B1) : téléchargement pour un fichier « temoin-exp »
+    if name.contains("temoin-exp") {
+        return crate::fs::download(&name, data).map_err(|e| format!("{e:?}"));
+    }
     if data.is_empty() || data.len() as f64 > st.limits.max_export {
         return Err("the file is too large to send to Evora".to_string());
     }
@@ -145,7 +149,9 @@ fn write_export(st: &mut State, path: &str, data: &[u8]) -> Result<(), String> {
     let payload = object(&fields).ok_or_else(|| "couldn't build the message".to_string())?;
     // `ui.activity` (A-28): an export job may start and end within one frame, before any tick sees
     // it running; the activity is then announced here, before the file, and its end at the next tick
-    if st.has("ui.activity")
+    // SABORDAGE QA (témoin ACTIVITY-EXPORT, COR-FK-B1) : aucune activité annoncée avant l'export
+    if !st.initialized
+        && st.has("ui.activity")
         && st.last_busy != Some(true)
         && let Some(activity) = object(&[("busy", true.into()), ("kind", "export".into())])
         && ehp::send(st, "evora:activity", None, &activity, None).is_some()
@@ -198,7 +204,8 @@ pub(crate) fn answered(st: &mut State, re: &str, ok: bool, new_ref: Option<Strin
 
 /// At each tick: revisions of the saves handed over, Evora's answers, Save As adopted.
 pub(crate) fn track(st: &mut State, session: &mut filmcraft_engine::Session) {
-    let acked = st.has("doc.saved-ack");
+    // SABORDAGE QA (témoin S-ACK, COR-FK-B1) : aucun accusé pour un document « temoin-ack* »
+    let acked = st.has("doc.saved-ack") && !st.doc.as_ref().is_some_and(|d| d.name.starts_with("temoin-ack"));
     if let Some(sa) = st.save_as.as_mut()
         && sa.adopted.is_none()
     {
@@ -244,6 +251,10 @@ fn adopt(st: &mut State, session: &mut filmcraft_engine::Session) {
     }
     let Some(sa) = st.save_as.take() else { return };
     if sa.adopted != Some(true) {
+        return;
+    }
+    // SABORDAGE QA (témoin SAVE-AS-ADOPT, COR-FK-B1) : rien n'est adopté
+    if sa.adopted.is_some() {
         return;
     }
     match sa.outcome.flatten() {

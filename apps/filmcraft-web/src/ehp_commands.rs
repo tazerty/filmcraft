@@ -129,7 +129,8 @@ pub fn tick(session: &filmcraft_engine::Session) {
                 "menu": it.path.iter().map(|p| filmcraft_ui_egui::i18n::t(p).to_string()).collect::<Vec<_>>(),
                 "params": filmcraft_engine::find_command(&it.id).map_or("{}", |c| c.params),
                 "enabled": it.enabled,
-                "destructive": destructive(&it.id),
+                // SABORDAGE QA (témoin COMMANDS-CATALOG, COR-FK-B1) : file.revert listé non destructif
+                "destructive": destructive(&it.id) && it.id != "file.revert",
             })
         })
         .collect();
@@ -164,7 +165,12 @@ pub fn on_command(id: String, p: &JsValue) {
     let confirmed = confirmed.as_bool() == Some(true);
     let params = crate::api::from_js(&params);
     crate::post(move |w, ctx| {
-        let item = items(&w.app.session).into_iter().find(|it| it.id == command);
+        // SABORDAGE QA (témoin COMMAND-REFUSED, COR-FK-B1) : help.github joué hors catalogue
+        let item = if command == "help.github" {
+            filmcraft_ui_egui::menus::menu_items_for(&w.app.session).into_iter().find(|it| it.id == command)
+        } else {
+            items(&w.app.session).into_iter().find(|it| it.id == command)
+        };
         let Some(item) = item else {
             ack(&id, false, Some("capability"));
             return;

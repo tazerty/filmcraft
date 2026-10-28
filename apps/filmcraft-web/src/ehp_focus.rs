@@ -24,9 +24,8 @@ pub fn listen() {
         // Neither the canvas nor the browser sees it: the key belongs to the shell.
         e.prevent_default();
         e.stop_immediate_propagation();
-        if e.type_() == "keydown" && !e.repeat() {
-            crate::ehp::focus_out();
-        }
+        // SABORDAGE QA (témoin FOCUS-OUT, COR-FK-B1) : la touche est retenue, rien n'est envoyé
+        let _ = e.repeat();
     });
     let listener: &js_sys::Function = on_key.as_ref().unchecked_ref();
     let down = window.add_event_listener_with_callback_and_bool("keydown", listener, true).is_ok();
