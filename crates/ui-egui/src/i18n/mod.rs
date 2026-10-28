@@ -443,7 +443,12 @@ mod tests {
     fn the_current_language_is_per_thread() {
         // any entry the Spanish catalog has
         let (entries, _) = catalog::parse_entries(include_str!("es.tsv"));
-        let Some((_, en, es)) = entries.into_iter().find(|(ctx, en, es)| ctx.is_empty() && en != es) else { return };
+        // Evora fork (patch COR-FK-B2): one the display overrides and Corte's name leave as it is
+        let Some((_, en, es)) = entries.into_iter().find(|(ctx, en, es)| {
+            ctx.is_empty() && en != es && !en.contains(overrides::UPSTREAM_NAME) && overrides::lookup("es", en) == (None, None)
+        }) else {
+            return;
+        };
         set_current(Language::Es);
         assert_eq!((current(), t(&en)), (Language::Es, es.as_str()));
         // another thread (another test) still draws in English
