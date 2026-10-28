@@ -52,6 +52,8 @@ struct Request {
     purpose: Purpose,
     /// Paths registered for it so far.
     files: Vec<String>,
+    /// A file came that the engine did not have (a renewed URL is no new file).
+    fresh: bool,
     /// Signed URLs being probed.
     probing: usize,
     /// The shell's closing `evora:ack`: accepted or not.
@@ -70,7 +72,7 @@ pub fn is_virtual_path(p: &str) -> bool {
 }
 
 fn remember(id: String, purpose: Purpose) {
-    REQUESTS.with(|r| r.borrow_mut().insert(id, Request { purpose, files: Vec::new(), probing: 0, closed: None }));
+    REQUESTS.with(|r| r.borrow_mut().insert(id, Request { purpose, files: Vec::new(), fresh: false, probing: 0, closed: None }));
 }
 
 /// The media files a project names, sorted, once each.
@@ -198,12 +200,14 @@ pub fn drop_files(files: Vec<web_sys::File>) -> bool {
     true
 }
 
-fn add_file(re: &str, path: String) {
+/// `path` came for request `re`: a new file (`fresh`), or a renewed URL of a file the engine has.
+fn add_file(re: &str, path: String, fresh: bool) {
     REQUESTS.with(|r| {
-        if let Some(q) = r.borrow_mut().get_mut(re)
-            && !q.files.contains(&path)
-        {
-            q.files.push(path);
+        if let Some(q) = r.borrow_mut().get_mut(re) {
+            q.fresh |= fresh;
+            if !q.files.contains(&path) {
+                q.files.push(path);
+            }
         }
     });
 }
@@ -253,7 +257,7 @@ pub fn on_file(re: &str, p: &JsValue) {
             return;
         }
         crate::fs::put(&path, js_sys::Uint8Array::new(&bytes).to_vec());
-        add_file(re, path);
+        add_file(re, path, true);
         return;
     }
     let Some(url) = url.as_string().filter(|u| u.starts_with("https://") || u.starts_with("http://")) else { return };
@@ -262,7 +266,7 @@ pub fn on_file(re: &str, p: &JsValue) {
     }
     // a renewal: the same entry, its new URL
     if crate::fs::is_remote(&path) && crate::fs::renew_remote(&path, url.clone()) {
-        add_file(re, path);
+        add_file(re, path, false);
         return;
     }
     REQUESTS.with(|r| {
@@ -275,7 +279,7 @@ pub fn on_file(re: &str, p: &JsValue) {
         match crate::remote::get_range(&url, 0, 0).await {
             Ok(reply) => {
                 crate::fs::register_remote(&path, url, reply.total);
-                add_file(&re, path);
+                add_file(&re, path, true);
             }
             Err(crate::remote::RangeError::Expired) => log::warn!("{path}: the signed URL Evora sent is not valid"),
             Err(crate::remote::RangeError::Other(e)) => log::warn!("{path}: {e}"),
@@ -328,8 +332,9 @@ fn finish_if_ready(re: &str) {
                     r.remove(p);
                 }
             });
-            if !q.files.is_empty() {
-                // the media pool forgets what it marked offline: the files are read on next use
+            if q.fresh {
+                // the media pool forgets what it marked offline: the files are read on next use (a
+                // renewed URL changes nothing for it: its reads wait, then go on)
                 crate::post(|w, _| w.app.session.media.clear());
             }
         }
