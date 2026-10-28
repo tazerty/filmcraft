@@ -17,7 +17,8 @@
 //! Evora fork (patch E4): with `?host=evora` inside an `<iframe>`, Evora's shell, on another origin
 //! that `evora-host.json` admits, speaks the Evora host protocol with the engine ([`ehp`]; V1
 //! bridge of patch COR-FK-B1: [`ehp_save`], [`ehp_commands`], [`ehp_media`], [`ehp_focus`],
-//! [`remote`]).
+//! [`remote`]); patch COR-FK-B2 gives it Corte's look and offer there ([`evora_look`]: Evora's
+//! theme and labels, the functions Corte V1 leaves out hidden, Evora's keys).
 //!
 //! Everything here is `wasm32`-only; on other targets the crate is empty.
 #![cfg(target_arch = "wasm32")]
@@ -32,6 +33,7 @@ pub mod ehp_focus;
 pub mod ehp_media;
 pub mod ehp_save;
 pub mod ehp_wire;
+pub mod evora_look;
 pub mod fs;
 pub mod import;
 pub mod opfs;
@@ -162,6 +164,10 @@ impl eframe::App for WebApp {
             f(self, ctx);
         }
         self.app.logic(ctx, frame);
+        // Evora fork (patch COR-FK-B2): labels, keys and theme report follow inside Evora's shell
+        if opfs::hosted() {
+            evora_look::tick(&mut self.app);
+        }
         ehp::tick(&mut self.app.session);
         api::poll_replies();
         // exports advance between frames (no threads)
@@ -334,6 +340,11 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 import::install_hooks(&mut app);
                 impose_language(&mut app);
                 apply_evora_theme(&mut app);
+                // Evora fork (patch COR-FK-B2): Evora's theme, labels and keys inside Evora's shell,
+                // before the first frame
+                if hosted {
+                    evora_look::enter(&mut app);
+                }
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));

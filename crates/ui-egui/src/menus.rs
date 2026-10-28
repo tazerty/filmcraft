@@ -169,6 +169,25 @@ pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
 
+// Evora fork (exception E-COR-L5-03, patch COR-FK-B2): the commands a host leaves out of its version
+// (Corte inside Evora: the functions excluded from its V1, COR-11). They have no menu item (so no
+// entry in Evora's command catalog either) and `invoke` refuses them, whatever asks (menu, shortcut,
+// control channel). Empty unless the host sets it: upstream's menus are unchanged.
+thread_local! {
+    static HIDDEN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Hide these commands: a command id, or a namespace ending in `.` (`transcript.`). Replaces the
+/// previous set.
+pub fn set_hidden(ids: &[&str]) {
+    HIDDEN.with(|h| *h.borrow_mut() = ids.iter().map(|id| (*id).to_string()).collect());
+}
+
+/// Whether the host hid command `id` ([`set_hidden`]).
+pub fn is_hidden(id: &str) -> bool {
+    HIDDEN.with(|h| h.borrow().iter().any(|p| if p.ends_with('.') { id.starts_with(p.as_str()) } else { id == p.as_str() }))
+}
+
 /// Explicit monitor parameters override keyboard focus.
 pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
@@ -180,6 +199,10 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Evora fork (exception E-COR-L5-03): a command the host left out is never run
+    if is_hidden(id) {
+        return Err(format!("`{id}` is not available in this version"));
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -799,6 +822,8 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             checked: None,
         });
     }
+    // Evora fork (exception E-COR-L5-03): no item for a command the host left out
+    out.retain(|it| !is_hidden(&it.id));
     out
 }
 
